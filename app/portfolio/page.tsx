@@ -9,7 +9,7 @@ interface Position {
   id: string;
   name: string; // 종목명
   book: string;
-  bondType: 'coupon' | 'discount';
+  bondType: 'coupon' | 'discount' | 'swap';
   sector: '국고채' | '통안채' | '특은채' | '시은채' | '공사채' | '여전채' | '회사채' | 'IRS' | 'OIS';
   maturityDate: string;
   couponRate: number;
@@ -17,6 +17,9 @@ interface Position {
   notional: number;
   entryYield: number;
   entryYieldPurchase: number; // 매수 시점 수익율
+  mtmYield?: number; // MTM 민평수익율
+  expectedDeltaPnL?: number; // 예상 델타 손익
+  expectedThetaPnL?: number; // 예상 세타 손익
   evaluationAmount: number; // 평가금액
   duration: number; // 듀레이션
   // 실무 데이터 기반 추가 필드
@@ -38,6 +41,7 @@ interface BookDailyPnL {
   dailyCarry: number;
   bondValuation: number;
   swapValuation: number;
+  swapThetaPnL: number;
   totalDailyPnL: number;
 }
 
@@ -92,47 +96,77 @@ export default function PortfolioDashboard() {
   const [fundingRate, setFundingRate] = useState<number>(0.0420);
 
   // 금리변동표 상태
-  const [shiftMatrix, setShiftMatrix] = useState<ShiftMatrixData[]>([]);
+  const [shockCurves, setShockCurves] = useState<{ bondCurves: { [key: string]: { t: number, val: number }[] }, swapCurve: { t: number, val: number }[] }>({ bondCurves: {}, swapCurve: [] });
 
-  
-  // 동적 선형 보간 함수 (7가지 섹터 맵핑)
-  function getInterpolatedShift(years: number, sector: string): number {
-    if (shiftMatrix.length === 0) return 0; // 방어 로직
+  // ExcelUploader에서 가져온 함수들
+  const parseTenorToYears = (tenor: string) => {
+    const t = String(tenor).toUpperCase().replace('년', 'Y').replace('개월', 'M').replace('일', 'D').trim();
+    if (t.includes('Y')) return parseFloat(t) || 0;
+    if (t.includes('M')) return (parseFloat(t) || 0) / 12;
+    if (t.includes('D')) return (parseFloat(t) || 0) / 365;
+    return parseFloat(t) || 0;
+  };
+
+  const getInterpolatedCurveShift = (targetYears: number, curveArray: { t: number, val: number }[]) => {
+    if (curveArray.length === 0) return 0;
+    if (targetYears <= curveArray[0].t) return curveArray[0].val;
+    if (targetYears >= curveArray[curveArray.length - 1].t) return curveArray[curveArray.length - 1].val;
     
-    // 섹터 맵핑 룰 적용
-    let key: string;
-    if (sector === '국고채' || sector === '통안채') {
-      key = '국채'; // 국고채, 통안채 -> 금리표의 국채 값 사용
-    } else if (sector === '특은채' || sector === '시은채') {
-      key = '은행채'; // 특은채, 시은채 -> 금리표의 은행채 값 사용
-    } else if (sector === '여전채') {
-      key = '카드채'; // 여전채 -> 금리표의 카드채 값 사용
-    } else if (sector === '공사채') {
-      key = '산금채'; // 공사채 -> 금리표의 산금채 값 사용
-    } else if (sector === '회사채') {
-      key = '회사채'; // 회사채 -> 금리표의 회사채 값 사용
-    } else if (sector === 'IRS' || sector === 'OIS') {
-      key = '국채'; // 스왑 커브가 별도로 없으므로 국채 변동폭 사용
-    } else {
-      key = '기타'; // 기타 섹터
-    }
-    
-    if (years <= shiftMatrix[0].years) return shiftMatrix[0][key] || 0;
-    if (years >= shiftMatrix[shiftMatrix.length - 1].years) return shiftMatrix[shiftMatrix.length - 1][key] || 0;
-    
-    for (let i = 0; i < shiftMatrix.length - 1; i++) {
-      const lower = shiftMatrix[i];
-      const upper = shiftMatrix[i + 1];
-      if (years >= lower.years && years <= upper.years) {
-        const ratio = (years - lower.years) / (upper.years - lower.years);
-        const lowerValue = lower[key] || 0;
-        const upperValue = upper[key] || 0;
-        return lowerValue + ratio * (upperValue - lowerValue);
+    for (let i = 0; i < curveArray.length - 1; i++) {
+      if (targetYears >= curveArray[i].t && targetYears <= curveArray[i+1].t) {
+        const range = curveArray[i+1].t - curveArray[i].t;
+        const weight = (targetYears - curveArray[i].t) / range;
+        return curveArray[i].val * (1 - weight) + curveArray[i+1].val * weight;
       }
     }
     return 0;
-  }
+  };
 
+  // [채권(Bullet) vs 스왑(KRD) 델타 계산 분리 함수]
+  const calculateDynamicDelta = (position: Position) => {
+    if (!shockCurves) return 0;
+
+    // 1. 스왑(IRS/OIS) 로직: KRD 테너별 현금흐름 분해 후 합산
+    if (position.bondType === 'swap') {
+      let deltaPnL = 0;
+      if (position.krdMap && shockCurves.swapCurve) {
+        Object.entries(position.krdMap).forEach(([tenor, pvbp]) => {
+          const t_years = parseTenorToYears(tenor);
+          const shockBp = getInterpolatedCurveShift(t_years, shockCurves.swapCurve);
+          
+          // Float Leg 리스크가 집중된 초단기(1D, 3M) 구간이 변동표와 잘 결합되는지 확인
+          if (tenor === '1D' || tenor === '3M') {
+            console.log(`[초단기 커브 매핑 확인] 종목:${position.name} | 테너:${tenor}(${t_years.toFixed(4)}년) | PVBP:${Math.round(pvbp)} | 매핑된 충격치:${shockBp}bp`);
+          }
+          
+          deltaPnL += pvbp * (-shockBp);
+        });
+      }
+      return deltaPnL;
+    } 
+    // 2. 현물 채권 로직: 단일 PVBP * 정확한 잔존만기(Bullet) 보간 충격
+    else {
+      let curveKey = '국채';
+      if (position.sector.includes('국고') || position.sector.includes('통안')) curveKey = '국채';
+      else if (position.sector.includes('시은')) curveKey = '은행채';
+      else if (position.sector.includes('특은') || position.sector.includes('공사')) curveKey = shockCurves.bondCurves['특은채'] ? '특은채' : '은행채';
+      else if (position.sector.includes('여전')) curveKey = '카드채';
+      else if (position.sector.includes('회사')) curveKey = '회사채';
+      
+      const targetCurve = shockCurves.bondCurves?.[curveKey] || shockCurves.bondCurves?.['국채'] || [];
+      const exactYears = position.remainingDays / 365; // 정확한 잔존 연수
+      const shockBp = getInterpolatedCurveShift(exactYears, targetCurve);
+      
+      // 디버깅용 로그 (채권 단일 충격 확인)
+      if (position.name.includes('케이비국민카드') || position.name.includes('아이엠')) { // 예시 타겟
+        console.log(`[채권 델타] ${position.name} | ${exactYears.toFixed(2)}년 | 섹터:${curveKey} | 적용충격:${shockBp.toFixed(3)}bp | PVBP:${position.pvbp} -> PnL:${position.pvbp * (-shockBp)}`);
+      }
+
+      return position.pvbp * (-shockBp);
+    }
+  };
+
+  
   // positions와 shiftMatrix 상태가 변경될 때마다 계산 실행 (파이프라인 2: 반응성 보장)
   useEffect(() => {
     if (positions.length > 0) {
@@ -143,15 +177,16 @@ export default function PortfolioDashboard() {
       setBookDailyPnLs([]);
       setPositionSummaries([]);
     }
-  }, [positions, shiftMatrix, fundingRate]); // shiftMatrix 추가
+  }, [positions, shockCurves, fundingRate]); // shockCurves 추가
 
   // 포트폴리오 메트릭 계산
   const calculatePortfolioMetrics = () => {
     console.log('🔄 포트폴리오 메트릭 계산 시작...', positions.length, '개 포지션');
-    console.log('📈 현재 금리변동표 상태:', shiftMatrix.length, '개 구간');
+    console.log('📈 현재 채권 다중 커브 상태:', Object.keys(shockCurves.bondCurves).length, '개 섹터');
+    console.log('📈 현재 스왑 변동곡선 상태:', shockCurves.swapCurve.length, '개 구간');
     
     // 방어 로직: 금리변동표가 없으면 당일 손익 0으로 처리
-    if (shiftMatrix.length === 0) {
+    if (Object.keys(shockCurves.bondCurves).length === 0 && shockCurves.swapCurve.length === 0) {
       console.log('⚠️ 금리변동표가 없어 당일 평가손익은 0으로 계산됩니다.');
     }
     
@@ -254,29 +289,42 @@ export default function PortfolioDashboard() {
       let dailyCarry = 0;
       let bondValuation = 0;
       let swapValuation = 0;
+      let swapThetaPnL = 0;
 
       bookPositions.forEach(position => {
-        const years = position.remainingDays / 365;
-        const shiftBp = getInterpolatedShift(years, position.sector);
-        const valuation = -1 * position.pvbp * shiftBp;
+  const dynamicDeltaPnL = calculateDynamicDelta(position);
 
-        if (position.bondType === 'swap' as any) {
-          swapValuation += valuation; // 파생상품은 스왑손익으로 분리
-        } else {
-          dailyCarry += (position.evaluationAmount * (position.entryYield / 100)) / 365; // 현물은 캐리 발생
-          bondValuation += valuation; // 현물은 채권 평가손익으로 분리
-        }
+  if (position.bondType === 'swap') {
+    swapValuation += dynamicDeltaPnL;
+    swapThetaPnL += position.expectedThetaPnL || 0;
+  } else {
+    const evalAmount = Number(position.evaluationAmount) || 0;
+    const yieldRate = Number(position.mtmYield) || 0;
+    dailyCarry += (evalAmount * (yieldRate / 100)) / 365;
+    bondValuation += dynamicDeltaPnL;
+  }
+  console.log(`[P&L 검증] 종목: ${position.name} | 동적델타: ${dynamicDeltaPnL} | 세타손익: ${position.expectedThetaPnL}`);
+});
 
-        console.log(`[P&L 검증] 종목: ${position.name.padEnd(20, ' ')} | 섹터: ${position.sector} | 잔존연수: ${years.toFixed(2)}년 | 적용된 변동폭: ${shiftBp.toFixed(2)}bp | 평가손익: ${Math.round(valuation).toLocaleString()}원`);
+      const totalDailyPnL = dailyCarry + bondValuation + swapValuation + (swapThetaPnL || 0);
+
+      // 디버깅 로그: 채권 MTM 수익률 배열 확인
+      console.log('채권 MTM 수익률 배열:', bookPositions.filter(p => p.bondType !== 'swap').map(p => ({ name: p.name, mtmYield: p.mtmYield })));
+      
+      // 디버깅 로그: 스왑 세타손익 확인
+      const swapPositions = bookPositions.filter(p => p.bondType === 'swap');
+      console.log(`[${bookName}] 스왑 세타손익 디버깅:`, {
+        swapCount: swapPositions.length,
+        swapThetaPnL: swapThetaPnL,
+        details: swapPositions.map(p => ({ name: p.name, expectedThetaPnL: p.expectedThetaPnL }))
       });
-
-      const totalDailyPnL = dailyCarry + bondValuation + swapValuation;
 
       dailyPnLs.push({
         bookName,
         dailyCarry: Math.round(dailyCarry),
         bondValuation: Math.round(bondValuation),
         swapValuation: Math.round(swapValuation),
+        swapThetaPnL: Math.round(swapThetaPnL), // 계산된 세타손익 반영
         totalDailyPnL: Math.round(totalDailyPnL)
       });
     });
@@ -287,8 +335,9 @@ export default function PortfolioDashboard() {
       dailyCarry: acc.dailyCarry + book.dailyCarry,
       bondValuation: acc.bondValuation + book.bondValuation,
       swapValuation: acc.swapValuation + book.swapValuation,
+      swapThetaPnL: acc.swapThetaPnL + book.swapThetaPnL,
       totalDailyPnL: acc.totalDailyPnL + book.totalDailyPnL
-    }), { bookName: 'Total', dailyCarry: 0, bondValuation: 0, swapValuation: 0, totalDailyPnL: 0 });
+    }), { bookName: 'Total', dailyCarry: 0, bondValuation: 0, swapValuation: 0, swapThetaPnL: 0, totalDailyPnL: 0 });
 
     setBookDailyPnLs([...dailyPnLs, total]);
     console.log('💰 북별 당일 손익 계산 완료:', [...dailyPnLs, total]);
@@ -325,10 +374,17 @@ export default function PortfolioDashboard() {
       };
 
       // Top & Bottom 3 계산 (당일 손익 기준)
-      const positionsWithPnL = bookPositions.map(p => ({
-        ...p,
-        totalDailyPnL: (p.evaluationAmount * (p.entryYield / 100)) / 365 + (-1 * p.pvbp * getInterpolatedShift(p.remainingDays / 365, p.sector))
-      }));
+      const positionsWithPnL = bookPositions.map(p => {
+        const carryOrTheta = p.bondType === 'swap' 
+          ? (p.expectedThetaPnL || 0) 
+          : ((p.evaluationAmount || 0) * ((p.mtmYield || 0) / 100)) / 365;
+        const dynamicDeltaPnL = calculateDynamicDelta(p);
+        
+        return {
+          ...p,
+          totalDailyPnL: carryOrTheta + dynamicDeltaPnL
+        };
+      });
 
       const sortedPositions = positionsWithPnL.sort((a, b) => b.totalDailyPnL - a.totalDailyPnL);
       const top3 = sortedPositions.slice(0, 3);
@@ -410,11 +466,10 @@ export default function PortfolioDashboard() {
             setPositions(loadedPositions); // State 업데이트 트리거
           }} />
           
-          <ShiftMatrixUploader onShiftMatrixLoaded={(loadedShiftMatrix) => {
-            console.log('📈 금리변동표 데이터 수신:', loadedShiftMatrix.length, '개 구간');
-            console.log('🔄 상태 업데이트 전 shiftMatrix:', shiftMatrix.length);
-            setShiftMatrix(loadedShiftMatrix); // 금리변동표 상태 업데이트
-            console.log('✅ 상태 업데이트 후 shiftMatrix:', loadedShiftMatrix.length);
+          <ShiftMatrixUploader onShiftMatrixLoaded={(loadedShockCurves) => {
+            console.log('📈 채권 다중 커브 데이터 수신:', Object.keys(loadedShockCurves.bondCurves).length, '개 섹터');
+            console.log('📈 스왑 변동곡선 데이터 수신:', loadedShockCurves.swapCurve.length, '개 구간');
+            setShockCurves(loadedShockCurves); // 변동곡선 상태 업데이트
           }} />
         </div>
 
@@ -530,7 +585,8 @@ export default function PortfolioDashboard() {
                       <th className="text-left py-1 px-2 text-gray-400">북 이름</th>
                       <th className="text-right py-1 px-2 text-gray-400">당일 이자수익</th>
                       <th className="text-right py-1 px-2 text-gray-400">당일 평가손익</th>
-                      <th className="text-right py-1 px-2 text-gray-400">당일 스왑손익</th>
+                      <th className="text-right py-1 px-2 text-gray-400">당일 스왑 평가손익</th>
+                      <th className="text-right py-1 px-2 text-gray-400">당일 스왑 세타손익</th>
                       <th className="text-right py-1 px-2 text-gray-400 font-bold">총 당일 예상손익</th>
                     </tr>
                   </thead>
@@ -546,6 +602,9 @@ export default function PortfolioDashboard() {
                         </td>
                         <td className={`py-1 px-2 text-right ${getPnLColor(book.swapValuation)}`}>
                           {book.swapValuation > 0 ? '+' : ''}{formatNumber(book.swapValuation)}
+                        </td>
+                        <td className={`py-1 px-2 text-right ${getPnLColor(book.swapThetaPnL || 0)}`}>
+                          {(book.swapThetaPnL || 0) > 0 ? '+' : ''}{formatNumber(book.swapThetaPnL || 0)}
                         </td>
                         <td className={`py-1 px-2 text-right font-bold ${getPnLColor(book.totalDailyPnL)}`}>
                           {book.totalDailyPnL > 0 ? '+' : ''}{formatNumber(book.totalDailyPnL)}
