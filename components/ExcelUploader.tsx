@@ -497,7 +497,7 @@ console.log(` └─ 최종 정밀 세타(캐리+롤다운 자동반영): ${Math
   // 최종 객체 반환
   return {
     id: `irs-${index}`,
-    name: String(row['종목명'] || ''),
+    name: String(row['종목명']) || '',
     book: bookName,
     bondType: 'swap',
     sector: sector,
@@ -509,6 +509,8 @@ console.log(` └─ 최종 정밀 세타(캐리+롤다운 자동반영): ${Math
     entryYield: 0,
     duration: t_maturity * 0.95 * direction,
     krdMap: krdMap,
+    nextFixingDate: nextCouponDate,
+    currentFloatRate: floatRate,
     expectedDeltaPnL: expectedDeltaPnL,
     expectedThetaPnL: expectedThetaPnL
   };
