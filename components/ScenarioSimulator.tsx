@@ -1,26 +1,19 @@
 "use client";
 
-import React, { useState, useMemo, useRef, useEffect } from 'react';
-import { addDays, parseISO, isBefore, isSameDay } from 'date-fns';
+import React, { useState, useRef, useEffect } from 'react';
+import { addDays, parseISO } from 'date-fns';
+import type { Position, FundingEvent, ShockCurves } from '@/types/portfolio';
+import { calculateDynamicFundingRate, calculateDailyMTM, calculateDailyCarry } from '@/lib/pricing';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine
 } from 'recharts';
-
-interface Position {
-  id: string; name: string; book: string; bondType: 'swap' | 'bond';
-  sector: string; maturityDate: string; couponRate: number;
-  evaluationAmount: number; duration: number; pvbp: number;
-  remainingDays: number; krdMap: { [tenor: string]: number };
-  mtmYield?: number; expectedThetaPnL?: number;
-  nextFixingDate?: Date; currentFloatRate?: number;
-}
-
+ 
 interface Props {
   positions: Position[];
   baseDate: string;
   fundingRate: number;
-  shockCurves?: any;
-  fundingEvents?: { date: string; shiftBp: number }[];
+  shockCurves?: ShockCurves;
+  fundingEvents?: FundingEvent[];
 }
 
 export default function ScenarioSimulator({ positions, baseDate, fundingRate, shockCurves, fundingEvents: propFundingEvents }: Props) {
@@ -39,102 +32,37 @@ export default function ScenarioSimulator({ positions, baseDate, fundingRate, sh
     if (!el) return;
     const observer = new ResizeObserver(entries => {
       const width = entries[0]?.contentRect.width ?? 0;
-      setChartContainerWidth(width);
+      if (width > 0) setChartContainerWidth(width);
     });
     observer.observe(el);
     return () => observer.disconnect();
   }, []);
 
+  useEffect(() => {
+    if (isSimulated && chartContainerRef.current) {
+      const width = chartContainerRef.current.getBoundingClientRect().width;
+      if (width > 0) setChartContainerWidth(width);
+    }
+  }, [isSimulated]);
+
   const runSimulation = () => {
     if (!positions || positions.length === 0) return;
-    const data = [];
+    const data: { day: number; mtmPnL: number; cumulativeCarry: number; totalPnL: number }[] = [];
     let cumulativeCarry = 0;
     let breakEvenDay = -1;
     let isBrokenEven = false;
 
-    const getCurveKey = (sector: string) => {
-      const s = sector || '';
-      if (s.includes('국고') || s.includes('통안') || s.includes('국채')) return '국채';
-      if (s.includes('시은') || s.includes('은행')) return '은행채';
-      if (s.includes('특은') || s.includes('공사')) return '특은채';
-      if (s.includes('여전') || s.includes('카드')) return '카드채';
-      if (s.includes('회사')) return '회사채';
-      if (s.includes('IRS') || s.includes('OIS') || s.includes('swap')) return 'swap';
-      return '국채'; 
-    };
-
-    // fundingEvents: props 또는 shockCurves 안에 내장된 것 모두 지원
-    const fundingEvents = propFundingEvents || shockCurves?.fundingEvents || [];
+    const fundingEvents: { date: string; shiftBp: number }[] = propFundingEvents || shockCurves?.fundingEvents || [];
     const baseDateParsed = parseISO(baseDate);
 
     for (let t = 0; t <= simDays; t++) {
-      let dailyMTM = 0;
-      let dailyCarry = 0;
-
-      // 그날의 시뮬레이션 날짜 계산
       const currentSimDate = addDays(baseDateParsed, t);
-
-      // 이벤트 드리븐 동적 조달 금리: 이벤트 날짜가 현재 날짜와 같거나 과거면 shiftBp 누적
-      const activeFundingRate = (fundingEvents as { date: string; shiftBp: number }[]).reduce(
-        (acc, ev) => {
-          const evDate = parseISO(ev.date);
-          if (isBefore(evDate, currentSimDate) || isSameDay(evDate, currentSimDate)) {
-            return acc + (ev.shiftBp / 10000);
-          }
-          return acc;
-        },
-        Number(fundingRate) || 0
-      );
-
-      // Step 모드는 D+1부터 100% 타격 적용
       const multiplier = shockType === 'step' ? (t > 0 ? 1.0 : 0) : (t / simDays);
 
-      positions.forEach(p => {
-        let currentShockBp = 0;
+      const activeFundingRate = calculateDynamicFundingRate(fundingRate, fundingEvents, currentSimDate);
 
-        if (shockMode === 'parallel') {
-          currentShockBp = (Number(baseShockBp) || 0) * multiplier;
-        } else if (shockCurves) {
-          const curveKey = getCurveKey(p.sector);
-          let targetCurve = p.bondType === 'swap' 
-            ? (shockCurves.swapCurve || []) 
-            : (shockCurves.bondCurves?.[curveKey] || shockCurves.bondCurves?.['국채'] || []);
-          
-          const safeRemainingDays = Number(p.remainingDays) || 0;
-          
-          // 💡 [핵심 버그 수정] 
-          // Step 모드: 금리 충격이 고정되어야 하므로 '초기 잔존만기'로 테너를 조회
-          // Ramp 모드: 만기가 줄어들며 커브를 타고 내려오므로 '현재 잔존만기'로 조회
-          const isStep = shockType === 'step';
-          const evalDays = isStep ? safeRemainingDays : Math.max(0, safeRemainingDays - t);
-          const years = evalDays / 365;
-          
-          currentShockBp = (getInterpolatedCurveShift(years, targetCurve) || 0) * multiplier;
-        }
-
-        // 💡 [핵심 알고리즘] Step 모드는 PVBP 고정(평행선), Ramp 모드는 동적 감소(곡선)
-        const safeRemainingDays = Number(p.remainingDays) || 1;
-        const isStep = shockType === 'step';
-        const agingFactor = isStep ? 1.0 : Math.max(0, safeRemainingDays - t) / safeRemainingDays;
-        
-        const activePVBP = (Number(p.pvbp) || 0) * agingFactor;
-        
-        // 매일매일 절대적인 평가손익을 산출 (누적 X)
-        const mtmPnL = activePVBP * (-currentShockBp);
-        dailyMTM += mtmPnL || 0;
-
-        // 캐리 계산
-        const evalAmt = Number(p.evaluationAmount) || 0;
-        let carryRate = (Number(p.mtmYield) || 0) + (currentShockBp / 100);
-        const dailyInterest = (evalAmt * (carryRate / 100)) / 365;
-        const dailyFundingCost = (evalAmt * activeFundingRate) / 365;
-
-        if (p.bondType === 'swap') {
-          dailyCarry += ((Number(p.expectedThetaPnL) || 0) + (evalAmt * (currentShockBp / 10000) / 365));
-        } else {
-          dailyCarry += (dailyInterest - dailyFundingCost);
-        }
-      });
+      const dailyMTM = calculateDailyMTM(positions, shockMode, shockType, baseShockBp, shockCurves, multiplier, t, currentSimDate);
+      const dailyCarry = calculateDailyCarry(positions, shockMode, shockType, baseShockBp, shockCurves, activeFundingRate, multiplier, t, currentSimDate);
 
       cumulativeCarry += dailyCarry || 0;
       const totalPnL = dailyMTM + cumulativeCarry;
@@ -146,72 +74,23 @@ export default function ScenarioSimulator({ positions, baseDate, fundingRate, sh
 
       data.push({
         day: t,
-        MTM손익: Math.round(dailyMTM) || 0,
-        누적캐리: Math.round(cumulativeCarry) || 0,
-        총손익: Math.round(totalPnL) || 0
+        mtmPnL: Math.round(dailyMTM) || 0,
+        cumulativeCarry: Math.round(cumulativeCarry) || 0,
+        totalPnL: Math.round(totalPnL) || 0
       });
     }
 
+    console.log('시뮬레이션 결과 (철리스트):', data.slice(0, 5), '... 총', data.length, '건');
     setChartData(data);
-    
     if (data.length > 0) {
       setSummary({
-        finalMTM: data[data.length - 1].MTM손익,
-        finalCarry: data[data.length - 1].누적캐리,
-        finalTotal: data[data.length - 1].총손익,
+        finalMTM: data[data.length - 1].mtmPnL,
+        finalCarry: data[data.length - 1].cumulativeCarry,
+        finalTotal: data[data.length - 1].totalPnL,
         breakEvenDay
       });
     }
-    
     setIsSimulated(true);
-  };
-
-  // 선형 보간 함수: 특정 연물(Years)에 해당하는 bp 변동값을 찾아줌
-  const getInterpolatedCurveShift = (years: number, targetCurve: any): number => {
-    if (!targetCurve || !Array.isArray(targetCurve) || targetCurve.length === 0) return 0;
-    
-    // ShiftMatrixUploader 데이터({t, val})와 호환되도록 데이터 정규화
-    const normalizedCurve = targetCurve
-      .map(item => ({
-        t: item.t !== undefined ? Number(item.t) : Number(item.tenor || 0),
-        val: item.val !== undefined ? Number(item.val) : Number(item.value || 0)
-      }))
-      .filter(item => !isNaN(item.t) && !isNaN(item.val))
-      .sort((a, b) => a.t - b.t);
-    
-    if (normalizedCurve.length === 0) return 0;
-    
-    // 1. 정확히 일치하는 테너가 있으면 그 값을 사용
-    const exactMatch = normalizedCurve.find(item => item.t === years);
-    if (exactMatch) return exactMatch.val;
-    
-    // 2. 선형 보간 로직
-    let lowerT = -1, upperT = -1;
-    let lowerVal = 0, upperVal = 0;
-    
-    for (let i = 0; i < normalizedCurve.length; i++) {
-      if (normalizedCurve[i].t <= years) {
-        lowerT = normalizedCurve[i].t;
-        lowerVal = normalizedCurve[i].val;
-      } else {
-        upperT = normalizedCurve[i].t;
-        upperVal = normalizedCurve[i].val;
-        break;
-      }
-    }
-    
-    // 요청한 기간이 가장 작은 테너보다 작으면 가장 작은 테너의 값 사용
-    if (lowerT === -1) return upperVal;
-    // 요청한 기간이 가장 큰 테너보다 크면 가장 큰 테너의 값 사용
-    if (upperT === -1) return lowerVal;
-    if (upperT === lowerT) return lowerVal;
-    
-    // 보간 계산 공식
-    const ratio = (years - lowerT) / (upperT - lowerT);
-    const result = lowerVal + (upperVal - lowerVal) * ratio;
-    
-    // 결과가 비정상(NaN 등)일 경우 0 반환
-    return isNaN(result) || !isFinite(result) ? 0 : result;
   };
 
   const formatAmt = (num: number) => Math.round(num / 10000).toLocaleString() + '만';
@@ -363,9 +242,9 @@ export default function ScenarioSimulator({ positions, baseDate, fundingRate, sh
                   {summary.breakEvenDay > 0 && (
                     <ReferenceLine x={summary.breakEvenDay} stroke="#10B981" strokeDasharray="3 3" label={{ position: 'top', value: 'BEP', fill: '#10B981', fontSize: 12 }} />
                   )}
-                  <Line type="monotone" dataKey="MTM손익" stroke="#EF4444" strokeWidth={2} dot={false} name="평가손익(MTM)" />
-                  <Line type="monotone" dataKey="누적캐리" stroke="#3B82F6" strokeWidth={2} dot={false} name="누적 이자수익(Carry)" />
-                  <Line type="monotone" dataKey="총손익" stroke="#10B981" strokeWidth={4} dot={false} name="Total Return (합계)" />
+                  <Line type="monotone" dataKey="mtmPnL" stroke="#EF4444" strokeWidth={2} dot={false} name="평가손익(MTM)" />
+                  <Line type="monotone" dataKey="cumulativeCarry" stroke="#3B82F6" strokeWidth={2} dot={false} name="누적 이자수익(Carry)" />
+                  <Line type="monotone" dataKey="totalPnL" stroke="#10B981" strokeWidth={4} dot={false} name="Total Return (합계)" />
                 </LineChart>
               </ResponsiveContainer>}
             </div>

@@ -195,12 +195,16 @@ export default function ExcelUploader({ onDataLoaded, baseDate = '2026-03-24' }:
           const krdMap: { [key: string]: number } = {};
           krdMap[tenor] = pvbp;
 
+          const bondMaturityDate = new Date(new Date(baseDate).getTime() + remainingDays * 86400000);
+          const bondMaturityStr = `${bondMaturityDate.getFullYear()}-${String(bondMaturityDate.getMonth()+1).padStart(2,'0')}-${String(bondMaturityDate.getDate()).padStart(2,'0')}`;
+
           return {
             id: `bond-${index}`,
             name: String(row['종목명'] || ''),
             book: String(row['펀드명'] || 'RP Fund'),
             bondType: 'cash',
             sector: mappedSector, // 맵핑된 섹터 사용
+            maturityDate: bondMaturityStr,
             notional: (Number(row['결제장부수량(만)']) || 0) * 10000,
             evaluationAmount: Number(row['평가금액']) || 0,
             remainingDays,
@@ -472,6 +476,8 @@ const expectedThetaPnL = tomNPV - baseNPV;
     expectedDeltaPnL += pvbp * (-shockBp); 
   });
 
+  const irsMaturityStr = `${maturityDate.getFullYear()}-${String(maturityDate.getMonth()+1).padStart(2,'0')}-${String(maturityDate.getDate()).padStart(2,'0')}`;
+
   // 최종 객체 반환
   return {
     id: `irs-${index}`,
@@ -479,6 +485,7 @@ const expectedThetaPnL = tomNPV - baseNPV;
     book: bookName,
     bondType: 'swap',
     sector: sector,
+    maturityDate: irsMaturityStr,
     notional: notional,
     evaluationAmount: Number(row['평가금액']) || 0,
     remainingDays: t_maturity * 365,

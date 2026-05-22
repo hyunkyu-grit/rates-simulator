@@ -4,7 +4,7 @@ export interface Position {
   book: string;
   bondType: 'swap' | 'bond';
   sector: '국고채' | '통안채' | '특은채' | '시은채' | '공사채' | '여전채' | '회사채' | 'IRS' | 'OIS';
-  maturityDate: string;
+  maturityDate?: string;
   couponRate: number;
   frequency: number;
   notional: number;
