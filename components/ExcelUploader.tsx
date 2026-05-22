@@ -18,21 +18,6 @@ const parseExcelDate = (excelDate: any) => {
   return new Date(excelDate);
 };
 
-// 경험적 PVBP 커브 (100억 당 1bp 환산)
-const calculateExactFixedPvbp = (years: number, notional: number, direction: number) => {
-  let multiplier = 0;
-  if (years <= 1) multiplier = years * 9.8;
-  else if (years <= 2) multiplier = 9.8 + (years - 1) * 9.4;
-  else if (years <= 3) multiplier = 19.2 + (years - 2) * 9.3;
-  else if (years <= 4) multiplier = 28.5 + (years - 3) * 9.0;
-  else if (years <= 5) multiplier = 37.5 + (years - 4) * 9.0;
-  else if (years <= 7) multiplier = 46.5 + (years - 5) * 8.5;
-  else if (years <= 10) multiplier = 63.5 + (years - 7) * 8.0;
-  else multiplier = 87.5 + (years - 10) * 7.0;
-
-  return (notional / 10000000000) * multiplier * 100000 * direction;
-};
-
 // KRD 기둥 (4Y, 7Y 포함)
 const pillars = [
   { name: '1D', y: 1/365 }, { name: '3M', y: 0.25 }, { name: '6M', y: 0.5 }, { name: '9M', y: 0.75 },
@@ -130,10 +115,7 @@ export default function ExcelUploader({ onDataLoaded, baseDate = '2026-03-24' }:
         const bondShockCurves = buildBondShockCurves(bondShockSheet); // { '국채': [...], '은행채': [...], '카드채': [...] }
         const swapShockCurve = buildShockCurve(swapShockSheet, 'swap'); // 스왑은 기존 단일 커브 로직 유지
 
-        // 브라우저 콘솔창에서 커브가 정상적으로 파싱되었는지 확인할 수 있게 로그 추가
-        console.log('Bond Shock Curves:', bondShockCurves);
-        console.log('Swap Shock Curve:', swapShockCurve);
-
+        
         // 특정 시점(t)의 변동폭(bp)을 선형 보간하는 함수
         const getInterpolatedShock = (targetYears: number, curve: { t: number, val: number }[]) => {
           if (curve.length === 0) return 0;
@@ -178,7 +160,7 @@ export default function ExcelUploader({ onDataLoaded, baseDate = '2026-03-24' }:
               mappedSector = '특은채'; 
               break;
             case '일반은행채':
-              mappedSector = '시은채'; 
+              mappedSector = '시은채';
               break;
             case '공사공단채':
             case '비금융특수채':
@@ -195,7 +177,8 @@ export default function ExcelUploader({ onDataLoaded, baseDate = '2026-03-24' }:
               mappedSector = '기타';
           }
 
-          let tenor = '10Y';
+          // 잔존일수에 따른 테너(KRD 버킷) 맵핑 (10년 초과 구간은 30Y로 통합)
+          let tenor = '30Y'; // 10년을 초과하는 만기는 기본값인 30Y로 맵핑
           if (years <= 0.25) tenor = '3M';
           else if (years <= 0.5) tenor = '6M';
           else if (years <= 0.75) tenor = '9M';
@@ -206,6 +189,8 @@ export default function ExcelUploader({ onDataLoaded, baseDate = '2026-03-24' }:
           else if (years <= 4) tenor = '4Y';
           else if (years <= 5) tenor = '5Y';
           else if (years <= 7) tenor = '7Y';
+          else if (years <= 10) tenor = '10Y';
+          // 10년을 초과하면 조건문에 걸리지 않고 기본값인 '30Y'가 유지됨
 
           const krdMap: { [key: string]: number } = {};
           krdMap[tenor] = pvbp;
@@ -335,9 +320,7 @@ export default function ExcelUploader({ onDataLoaded, baseDate = '2026-03-24' }:
         let zeroCurve = bootstrapZeroCurve(parCurve);
         if (zeroCurve.length === 0) zeroCurve = [{ t: 0, rate: 0.03 }, { t: 30, rate: 0.03 }];
 
-        console.log("📊 엑셀 파싱 Par Curve:", parCurve);
-        console.log("📈 변환된 Zero Curve (Bootstrapped):", zeroCurve);
-
+        
         // 커브가 비어있을 경우 Fallback (Flat 3%)
         if (zeroCurve.length === 0) zeroCurve = [{ t: 0, rate: 0.03 }, { t: 30, rate: 0.03 }];
 
@@ -410,7 +393,7 @@ export default function ExcelUploader({ onDataLoaded, baseDate = '2026-03-24' }:
   const direction = String(row['지급 수취']).trim() === '수취' ? 1 : -1; 
 
   // 정확한 금리 파싱 및 Float Leg 재정의
-  const fixedRateStr = row['계약이율'] || row['표면이율'] || row['고정금리'] || row['이율'];
+const fixedRateStr = row['구조화쿠폰'] || row['계약이율'] || row['표면이율'] || row['고정금리'] || row['이율'];
   const fixedRate = fixedRateStr ? Number(fixedRateStr) / 100 : 0.035;
 
   const floatRateStr = row['변동쿠폰'] || row['변동금리'];
@@ -481,11 +464,6 @@ const tomNPV = (tomFixedPV - tomFloatPV) * direction;
 // 순수 NPV 변화량만으로 완벽한 Spot Theta 산출.
 const expectedThetaPnL = tomNPV - baseNPV; 
 
-// 콘솔에서 내부 계산 내역 증명
-console.log(`[세타 디버깅] 종목: ${row['종목명']}`);
-console.log(` ├─ 오늘 NPV(base): ${Math.round(baseNPV)}원`);
-console.log(` ├─ 내일 NPV(tom): ${Math.round(tomNPV)}원`);
-console.log(` └─ 최종 정밀 세타(캐리+롤다운 자동반영): ${Math.round(expectedThetaPnL)}원`);
 
   let expectedDeltaPnL = 0;
   Object.entries(krdMap).forEach(([tenor, pvbp]) => {
