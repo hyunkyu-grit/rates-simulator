@@ -47,6 +47,22 @@ export default function BondPriceCalculator() {
   const [calculatedPrice, setCalculatedPrice] = useState<number | null>(null);
   const [calculationHistory, setCalculationHistory] = useState<BondCalculationRecord[]>([]);
   const [deletingId, setDeletingId] = useState<number | null>(null);
+  const [apiMessage, setApiMessage] = useState<string | null>(null);
+  const [apiLoading, setApiLoading] = useState(false);
+
+  const testBackendApi = async () => {
+    setApiLoading(true);
+    setApiMessage(null);
+    try {
+      const res = await fetch('http://localhost:8000/api/hello');
+      const data = await res.json();
+      setApiMessage(data.message);
+    } catch {
+      setApiMessage('연결 실패: 백엔드 서버를 확인해주세요.');
+    } finally {
+      setApiLoading(false);
+    }
+  };
 
   // 페이지 로드시 데이터베이스에서 과거 계산 기록 불러오기
   useEffect(() => {
@@ -350,6 +366,24 @@ export default function BondPriceCalculator() {
       <div className="p-6">
         <div className="max-w-7xl mx-auto">
           <h1 className="text-3xl font-bold mb-8 text-center">채권 단가 계산기</h1>
+
+          {/* 백엔드 연동 테스트 */}
+          <div className="flex items-center gap-4 mb-8 p-4 bg-gray-800 rounded-lg border border-gray-700">
+            <button
+              onClick={testBackendApi}
+              disabled={apiLoading}
+              className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white font-medium rounded-lg transition-colors duration-200"
+            >
+              {apiLoading ? '요청 중...' : '백엔드 연동 테스트'}
+            </button>
+            {apiMessage && (
+              <span className={`text-sm font-medium ${
+                apiMessage.startsWith('연결 실패') ? 'text-red-400' : 'text-emerald-400'
+              }`}>
+                응답: {apiMessage}
+              </span>
+            )}
+          </div>
         
         {/* 채권 종류 선택 탭 */}
         <div className="mb-6">

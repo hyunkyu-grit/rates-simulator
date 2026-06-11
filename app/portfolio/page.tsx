@@ -19,7 +19,7 @@ export default function PortfolioDashboard() {
   const [scenarioShockCurves, setScenarioShockCurves] = useState<ShockCurves>({ bondCurves: {}, swapCurve: [] });
   const [activeTab, setActiveTab] = useState<'dashboard' | 'scenario'>('dashboard');
 
-  const { pvbpSensitivity, bookDailyPnLs, positionSummaries, calculateScenarioPnL } = usePortfolioMetrics(positions, dailyShockCurves, fundingRate);
+  const { pvbpSensitivity, bookDailyPnLs, positionSummaries, calculateScenarioPnL, setMetrics } = usePortfolioMetrics(positions, dailyShockCurves, fundingRate, baseDate);
 
   useEffect(() => {
     const savedDate = localStorage.getItem('dashboardBaseDate');
@@ -85,6 +85,7 @@ export default function PortfolioDashboard() {
             baseDate={baseDate} 
             fundingRate={fundingRate} 
             shockCurves={scenarioShockCurves}
+            onMetricsUpdate={setMetrics}
           />
         </div>
       </div>

@@ -1,9 +1,7 @@
 "use client";
 
 import React, { useState, useRef, useEffect } from 'react';
-import { addDays, parseISO } from 'date-fns';
-import type { Position, FundingEvent, ShockCurves } from '@/types/portfolio';
-import { calculateDynamicFundingRate, calculateDailyMTM, calculateDailyCarry } from '@/lib/pricing';
+import type { Position, FundingEvent, ShockCurves, PVBPSensitivity, BookDailyPnL } from '@/types/portfolio';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine
 } from 'recharts';
@@ -14,9 +12,10 @@ interface Props {
   fundingRate: number;
   shockCurves?: ShockCurves;
   fundingEvents?: FundingEvent[];
+  onMetricsUpdate?: (pvbp: PVBPSensitivity[], bookPnLs: BookDailyPnL[]) => void;
 }
 
-export default function ScenarioSimulator({ positions, baseDate, fundingRate, shockCurves, fundingEvents: propFundingEvents }: Props) {
+export default function ScenarioSimulator({ positions, baseDate, fundingRate, shockCurves, fundingEvents: propFundingEvents, onMetricsUpdate }: Props) {
   const [simDays, setSimDays] = useState<number>(90);
   const [shockType, setShockType] = useState<'step' | 'ramp'>('step');
   const [shockMode, setShockMode] = useState<'parallel' | 'matrix'>('parallel');
@@ -45,51 +44,39 @@ export default function ScenarioSimulator({ positions, baseDate, fundingRate, sh
     }
   }, [isSimulated]);
 
-  const runSimulation = () => {
+  const runSimulation = async () => {
     if (!positions || positions.length === 0) return;
-    const data: { day: number; mtmPnL: number; cumulativeCarry: number; totalPnL: number }[] = [];
-    let cumulativeCarry = 0;
-    let breakEvenDay = -1;
-    let isBrokenEven = false;
 
-    const fundingEvents: { date: string; shiftBp: number }[] = propFundingEvents || shockCurves?.fundingEvents || [];
-    const baseDateParsed = parseISO(baseDate);
+    const payload = {
+      positions,
+      shockCurves: shockCurves ?? { bondCurves: {}, swapCurve: [], fundingEvents: [] },
+      fundingRate,
+      fundingEvents: propFundingEvents ?? shockCurves?.fundingEvents ?? [],
+      simDays,
+      shockType,
+      shockMode,
+      baseShockBp,
+      baseDate,
+    };
 
-    for (let t = 0; t <= simDays; t++) {
-      const currentSimDate = addDays(baseDateParsed, t);
-      const multiplier = shockType === 'step' ? (t > 0 ? 1.0 : 0) : (t / simDays);
-
-      const activeFundingRate = calculateDynamicFundingRate(fundingRate, fundingEvents, currentSimDate);
-
-      const dailyMTM = calculateDailyMTM(positions, shockMode, shockType, baseShockBp, shockCurves, multiplier, t, currentSimDate);
-      const dailyCarry = calculateDailyCarry(positions, shockMode, shockType, baseShockBp, shockCurves, activeFundingRate, multiplier, t, currentSimDate);
-
-      cumulativeCarry += dailyCarry || 0;
-      const totalPnL = dailyMTM + cumulativeCarry;
-
-      if (totalPnL >= 0 && dailyMTM < 0 && !isBrokenEven) {
-        breakEvenDay = t;
-        isBrokenEven = true;
-      }
-
-      data.push({
-        day: t,
-        mtmPnL: Math.round(dailyMTM) || 0,
-        cumulativeCarry: Math.round(cumulativeCarry) || 0,
-        totalPnL: Math.round(totalPnL) || 0
+    try {
+      const res = await fetch('http://localhost:8000/api/simulate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
       });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const result = await res.json();
+
+      setChartData(result.chartData ?? []);
+      if (result.summary) setSummary(result.summary);
+      if (onMetricsUpdate) onMetricsUpdate(result.pvbpSensitivity ?? [], result.bookDailyPnLs ?? []);
+    } catch (err) {
+      console.error('시뮬레이션 오류:', err);
+      alert('백엔드 서버 연결 실패. http://localhost:8000 을 확인해주세요.');
+      return;
     }
 
-    console.log('시뮬레이션 결과 (철리스트):', data.slice(0, 5), '... 총', data.length, '건');
-    setChartData(data);
-    if (data.length > 0) {
-      setSummary({
-        finalMTM: data[data.length - 1].mtmPnL,
-        finalCarry: data[data.length - 1].cumulativeCarry,
-        finalTotal: data[data.length - 1].totalPnL,
-        breakEvenDay
-      });
-    }
     setIsSimulated(true);
   };
 

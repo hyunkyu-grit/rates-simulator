@@ -138,7 +138,7 @@ export default function ExcelUploader({ onDataLoaded, baseDate = '2026-03-24' }:
         const bondData = XLSX.utils.sheet_to_json(bondSheet);
 
         const parsedBonds = bondData.map((row: any, index: number) => {
-          const remainingDays = Number(row['잔존일수']) || 0;
+          const remainingDays = Math.round(Number(row['잔존일수']) || 0);
           const years = remainingDays / 365;
 
           // [수정1] 10,000으로 나누어 정확한 1bp(PVBP) 가치로 환산!
@@ -488,7 +488,7 @@ const expectedThetaPnL = tomNPV - baseNPV;
     maturityDate: irsMaturityStr,
     notional: notional,
     evaluationAmount: Number(row['평가금액']) || 0,
-    remainingDays: t_maturity * 365,
+    remainingDays: Math.round(t_maturity * 365),
     tenor: '10Y',
     pvbp: totalPVBP,
     entryYield: 0,
