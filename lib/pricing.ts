@@ -118,6 +118,8 @@ export function calculateDailyMTM(
     const isStep = shockType === 'step';
     const agingFactor = isStep ? 1.0 : Math.max(0, safeRemainingDays - t) / safeRemainingDays;
     const activePVBP = (Number(p.pvbp) || 0) * agingFactor;
+    // 채권/IRS 통일: PVBP는 DV01 관행 (receive-fixed=양수, long bond=양수)
+    // MTM = pvbp * (-shockBp)  — 금리 상승 시 손실
     const mtmPnL = activePVBP * (-currentShockBp);
     return total + (mtmPnL || 0);
   }, 0);

@@ -12,10 +12,11 @@ interface Props {
   fundingRate: number;
   shockCurves?: ShockCurves;
   fundingEvents?: FundingEvent[];
+  irsParRates?: { t: number; rate: number }[];
   onMetricsUpdate?: (pvbp: PVBPSensitivity[], bookPnLs: BookDailyPnL[]) => void;
 }
 
-export default function ScenarioSimulator({ positions, baseDate, fundingRate, shockCurves, fundingEvents: propFundingEvents, onMetricsUpdate }: Props) {
+export default function ScenarioSimulator({ positions, baseDate, fundingRate, shockCurves, fundingEvents: propFundingEvents, irsParRates = [], onMetricsUpdate }: Props) {
   const [simDays, setSimDays] = useState<number>(90);
   const [shockType, setShockType] = useState<'step' | 'ramp'>('step');
   const [shockMode, setShockMode] = useState<'parallel' | 'matrix'>('parallel');
@@ -57,6 +58,7 @@ export default function ScenarioSimulator({ positions, baseDate, fundingRate, sh
       shockMode,
       baseShockBp,
       baseDate,
+      irsCurves: irsParRates,
     };
 
     try {

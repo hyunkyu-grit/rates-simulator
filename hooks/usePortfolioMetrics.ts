@@ -5,7 +5,8 @@ export const usePortfolioMetrics = (
   positions: Position[],
   shockCurves: ShockCurves | null,
   fundingRate: number,
-  baseDate: string
+  baseDate: string,
+  irsParRates: { t: number; rate: number }[] = []
 ) => {
   const [pvbpSensitivity, setPvbpSensitivity] = useState<PVBPSensitivity[]>([]);
   const [bookDailyPnLs, setBookDailyPnLs] = useState<BookDailyPnL[]>([]);
@@ -33,6 +34,7 @@ export const usePortfolioMetrics = (
       shockMode: hasCurveData ? 'matrix' : 'parallel',
       baseShockBp: 0,
       baseDate,
+      irsCurves: irsParRates,
     };
 
     try {
@@ -48,7 +50,7 @@ export const usePortfolioMetrics = (
     } catch {
       // 백엔드 미연결 시 조용히 실패
     }
-  }, [positions, shockCurves, fundingRate, baseDate]);
+  }, [positions, shockCurves, fundingRate, baseDate, irsParRates]);
 
   useEffect(() => {
     fetchBaseMetrics();

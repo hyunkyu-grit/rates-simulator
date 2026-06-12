@@ -18,8 +18,9 @@ export default function PortfolioDashboard() {
   const [dailyShockCurves, setDailyShockCurves] = useState<ShockCurves>({ bondCurves: {}, swapCurve: [] });
   const [scenarioShockCurves, setScenarioShockCurves] = useState<ShockCurves>({ bondCurves: {}, swapCurve: [] });
   const [activeTab, setActiveTab] = useState<'dashboard' | 'scenario'>('dashboard');
+  const [irsParRates, setIrsParRates] = useState<{ t: number; rate: number }[]>([]);
 
-  const { pvbpSensitivity, bookDailyPnLs, positionSummaries, calculateScenarioPnL, setMetrics } = usePortfolioMetrics(positions, dailyShockCurves, fundingRate, baseDate);
+  const { pvbpSensitivity, bookDailyPnLs, positionSummaries, calculateScenarioPnL, setMetrics } = usePortfolioMetrics(positions, dailyShockCurves, fundingRate, baseDate, irsParRates);
 
   useEffect(() => {
     const savedDate = localStorage.getItem('dashboardBaseDate');
@@ -50,7 +51,7 @@ export default function PortfolioDashboard() {
           <h2 className="text-2xl font-bold text-blue-300 mb-2">포트폴리오 데이터를 업로드해주세요</h2>
           <p className="text-gray-400 mb-8">채권 및 스왑 로데이터 엑셀과 금리 변동표를 업로드하면 퀀트 엔진이 구동됩니다.</p>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6 text-left">
-            <ExcelUploader baseDate={baseDate} onDataLoaded={setPositions} />
+            <ExcelUploader baseDate={baseDate} onDataLoaded={setPositions} onParRatesLoaded={setIrsParRates} />
           </div>
         </div>
       </div>
@@ -60,7 +61,7 @@ export default function PortfolioDashboard() {
       <div className="w-full flex flex-col h-full">
         <div style={{ display: activeTab === 'dashboard' ? 'block' : 'none' }} className="w-full">
           <div className="mb-4 grid grid-cols-1 lg:grid-cols-2 gap-4">
-            <ExcelUploader baseDate={baseDate} onDataLoaded={setPositions} />
+            <ExcelUploader baseDate={baseDate} onDataLoaded={setPositions} onParRatesLoaded={setIrsParRates} />
             <ShiftMatrixUploader onShiftMatrixLoaded={setDailyShockCurves} title="당일 실제 금리변동표 업로드" />
           </div>
 
@@ -85,6 +86,7 @@ export default function PortfolioDashboard() {
             baseDate={baseDate} 
             fundingRate={fundingRate} 
             shockCurves={scenarioShockCurves}
+            irsParRates={irsParRates}
             onMetricsUpdate={setMetrics}
           />
         </div>

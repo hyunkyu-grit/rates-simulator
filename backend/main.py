@@ -4,6 +4,7 @@ from pydantic import BaseModel
 from typing import Literal
 from datetime import date, timedelta
 import pandas as pd
+import quant_engine as qe
 
 app = FastAPI()
 
@@ -72,6 +73,9 @@ class FrontendPosition(BaseModel):
     krdMap: dict[str, float] = {}
     mtmYield: float | None = None
     expectedThetaPnL: float | None = None
+    direction: float = 1.0          # IRS: +1=receive-fixed, -1=pay-fixed / Bond: +1=long
+    currentFloatRate: float = 0.0   # IRS 현재 구간 변동금리 (% 단위, e.g. 2.81)
+    nextFixingDate: str | None = None   # IRS 다음 변동금리 픽싱/지급일 (ISO date string)
 
 
 class FrontendShockCurves(BaseModel):
@@ -90,6 +94,7 @@ class SimulateRequest(BaseModel):
     shockMode: str = "parallel"         # 'parallel' | 'matrix'
     baseShockBp: float = 50.0
     baseDate: str = "2026-01-01"
+    irsCurves: list[dict] = []          # [{t: float, rate: float}, ...] IRS Par Rate (decimal)
 
 
 # ── 퀀트 엔진 헬퍼 함수 ───────────────────────────────────────────────────────
@@ -213,7 +218,8 @@ def calculate_daily_mtm(
 
             total += current_pvbp * (-shock_bp)
         else:
-            # IRS: 전체 PVBP 기준 aging 로직 유지
+            # IRS: PVBP는 DV01 관행 (receive-fixed=양수, pay-fixed=음수)
+            # MTM = pvbp * (-shock_bp)  — 채권과 동일 공식
             if current_date and _is_matured(p, current_date):
                 continue
             shock_bp = get_position_shock_bp(p, shock_mode, shock_type, base_shock_bp, shock_curves, multiplier, t)
@@ -378,6 +384,8 @@ def build_book_daily_pnl(
                 if p.krdMap and shock_curves and shock_curves.swapCurve:
                     for tenor, pvbp_val in p.krdMap.items():
                         sbp = interpolate_curve_shift(parse_tenor_to_years(tenor), shock_curves.swapCurve)
+                        # IRS PVBP는 DV01 관행: receive-fixed=양수, pay-fixed=음수
+                        # MTM = pvbp * (-sbp)  (채권과 동일)
                         delta += float(pvbp_val or 0) * (-sbp)
                 swap_val += delta
                 swap_theta += p.expectedThetaPnL or 0.0
@@ -423,12 +431,89 @@ def hello():
     return {"message": "Hello World"}
 
 
+def enrich_irs_pvbp(
+    positions: list[FrontendPosition],
+    irs_curves: list[dict],
+    base_date_str: str = "2026-01-01",
+) -> list[FrontendPosition]:
+    """
+    IRS 포지션의 pvbp / krdMap / expectedThetaPnL을 quant_engine으로 산출하여 채워 반환.
+
+    irsCurves가 비어있으면 flat 3% 커브를 fallback으로 사용.
+    채권 포지션은 그대로 통과.
+    """
+    par_rates = qe.parse_irs_curves(irs_curves)
+
+    enriched: list[FrontendPosition] = []
+    for p in positions:
+        if p.bondType != "swap":
+            enriched.append(p)
+            continue
+
+        t_mat = max(float(p.remainingDays or 0) / 365.0, 1 / 365)
+        # 다음 변동 지급일: nextFixingDate 필드 우선 사용, 없으면 3개월 근사
+        if p.nextFixingDate:
+            try:
+                nfd = date.fromisoformat(str(p.nextFixingDate)[:10])
+                ref = date.fromisoformat(str(base_date_str)[:10])
+                days_to_next = max((nfd - ref).days, 1)
+                t_next = days_to_next / 365.0
+            except Exception:
+                t_next = 0.25
+        else:
+            t_next = t_mat * 0.1 if t_mat < 0.25 else 0.25
+        t_next = max(min(t_next, t_mat), 1.0 / 365.0)
+
+        pvbp = qe.compute_irs_pvbp(
+            par_rates          = par_rates,
+            notional           = p.notional or 0.0,
+            fixed_rate_pct     = p.couponRate or 0.0,       # % 단위
+            direction          = int(p.direction or 1),
+            t_maturity         = t_mat,
+            t_next_payment     = t_next,
+            current_float_rate_pct = p.currentFloatRate or 0.0,  # % 단위
+            sector             = p.sector or "IRS",
+        )
+        krd = qe.compute_irs_krd_map(
+            par_rates          = par_rates,
+            notional           = p.notional or 0.0,
+            fixed_rate_pct     = p.couponRate or 0.0,
+            direction          = int(p.direction or 1),
+            t_maturity         = t_mat,
+            t_next_payment     = t_next,
+            current_float_rate_pct = p.currentFloatRate or 0.0,
+            sector             = p.sector or "IRS",
+        )
+        theta = qe.compute_irs_theta(
+            par_rates          = par_rates,
+            notional           = p.notional or 0.0,
+            fixed_rate_pct     = p.couponRate or 0.0,
+            direction          = int(p.direction or 1),
+            t_maturity         = t_mat,
+            t_next_payment     = t_next,
+            current_float_rate_pct = p.currentFloatRate or 0.0,
+            sector             = p.sector or "IRS",
+        )
+
+        # Pydantic 모델은 immutable이므로 copy(update=...) 사용
+        enriched.append(p.model_copy(update={
+            "pvbp": pvbp,
+            "krdMap": krd,
+            "expectedThetaPnL": theta,
+        }))
+
+    return enriched
+
+
 @app.post("/api/simulate")
 def simulate(req: SimulateRequest):
+    # IRS 포지션에 백엔드 프라이싱 결과 주입
+    positions = enrich_irs_pvbp(req.positions, req.irsCurves, req.baseDate)
+
     funding_events = req.fundingEvents or (req.shockCurves.fundingEvents if req.shockCurves else [])
 
     chart_data, summary = build_chart_data(
-        positions=req.positions,
+        positions=positions,
         shock_curves=req.shockCurves,
         funding_rate=req.fundingRate,
         funding_events=funding_events,
@@ -438,8 +523,19 @@ def simulate(req: SimulateRequest):
         base_shock_bp=req.baseShockBp,
         base_date_str=req.baseDate,
     )
-    pvbp_sensitivity = build_pvbp_sensitivity(req.positions)
-    book_daily_pnls = build_book_daily_pnl(req.positions, req.shockCurves, req.fundingRate)
+    pvbp_sensitivity = build_pvbp_sensitivity(positions)
+    book_daily_pnls = build_book_daily_pnl(positions, req.shockCurves, req.fundingRate)
+
+    # ── DEBUG: IRS Raw Data 터미널 출력 ─────────────────────────────────────────
+    irs_pos = [p for p in positions if p.bondType == "swap"]
+    if irs_pos:
+        print("\n[DEBUG /api/simulate] ── IRS Positions Raw Data ──────────────────")
+        for p in irs_pos:
+            print(f"  id={getattr(p,'id',None)} sector={p.sector} direction={p.direction} "
+                  f"notional={p.notional} couponRate={p.couponRate}% "
+                  f"currentFloatRate={p.currentFloatRate}%")
+            print(f"    pvbp={p.pvbp:.0f}  krdMap={p.krdMap}")
+        print("[DEBUG] ─────────────────────────────────────────────────────────\n")
 
     return {
         "status": "ok",
