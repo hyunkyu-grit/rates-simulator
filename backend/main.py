@@ -3,15 +3,21 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Literal
 from datetime import date, timedelta
+import os
 import numpy as np
 import pandas as pd
 import quant_engine as qe
 
 app = FastAPI()
 
+ALLOWED_ORIGINS = [
+    "http://localhost:3000",
+    os.environ.get("FRONTEND_URL", ""),  # Render 환경변수로 Vercel URL 주입
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=[o for o in ALLOWED_ORIGINS if o],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -640,6 +646,7 @@ def enrich_irs_pvbp(
             t_next_payment     = t_next,
             current_float_rate_pct = p.currentFloatRate or 0.0,
             sector             = p.sector or "IRS",
+            base_date          = date.fromisoformat(base_date_str[:10]),
         )
 
         # Pydantic 모델은 immutable이므로 copy(update=...) 사용
@@ -725,3 +732,9 @@ def simulate(req: SimulateRequest):
         "pvbpSensitivity": pvbp_sensitivity,
         "bookDailyPnLs": book_daily_pnls,
     }
+
+
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run("main:app", host="0.0.0.0", port=port)

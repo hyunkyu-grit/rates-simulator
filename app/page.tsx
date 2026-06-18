@@ -54,7 +54,7 @@ export default function BondPriceCalculator() {
     setApiLoading(true);
     setApiMessage(null);
     try {
-      const res = await fetch('http://localhost:8000/api/hello');
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000'}/api/hello`);
       const data = await res.json();
       setApiMessage(data.message);
     } catch {

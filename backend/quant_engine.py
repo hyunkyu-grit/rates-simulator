@@ -450,22 +450,28 @@ def compute_irs_theta(
     sector: str,
     fixed_freq: float = 0.25,
     float_freq: float = 0.25,
+    base_date: Optional[_date] = None,
 ) -> float:
     """
     Spot Theta = NPV(t+1일) − NPV(t)   [커브 고정, 시간만 경과]
 
     시간 경과로 인한 순수 NPV 변화량:
       '할인율 언와인딩(Carry)' + '커브 롤다운(Roll-down)' 포함
+
+    base_date를 전달하면 ACT/365 실일수 기준 스텁 계산 (simulate_irs_path_fm과 일치).
     """
     DT = 1.0 / 365.0
     short_r      = current_float_rate_pct / 100.0
     par_anchored = _inject_short_anchors(par_rates, short_r)
     zc = bootstrap_zero_curve(par_anchored)
 
+    tomorrow: Optional[_date] = base_date + timedelta(days=1) if base_date else None
+
     npv_today = compute_irs_npv(
         notional, fixed_rate_pct, direction, t_maturity,
         t_next_payment, current_float_rate_pct, sector, zc,
         fixed_freq, float_freq,
+        sim_date=base_date,
     )
     # 내일: 만기/지급일 각 1일 앞당김
     npv_tomorrow = compute_irs_npv(
@@ -474,6 +480,7 @@ def compute_irs_theta(
         max(t_next_payment - DT, DT),   # 최소 1일 잔존
         current_float_rate_pct, sector, zc,
         fixed_freq, float_freq,
+        sim_date=tomorrow,
     )
     theta = npv_tomorrow - npv_today
     print(

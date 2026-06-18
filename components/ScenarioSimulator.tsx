@@ -68,7 +68,7 @@ export default function ScenarioSimulator({ positions, baseDate, fundingRate, sh
     };
 
     try {
-      const res = await fetch('http://localhost:8000/api/simulate', {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000'}/api/simulate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -85,7 +85,7 @@ export default function ScenarioSimulator({ positions, baseDate, fundingRate, sh
       setIsSimulated(true);
     } catch (err) {
       console.error('시뮬레이션 오류:', err);
-      setErrorMsg(err instanceof Error ? err.message : '알 수 없는 오류가 발생했습니다. 백엔드 서버(http://localhost:8000)를 확인해주세요.');
+      setErrorMsg(err instanceof Error ? err.message : '알 수 없는 오류가 발생했습니다. 백엔드 서버를 확인해주세요.');
     } finally {
       setIsLoading(false);
     }
