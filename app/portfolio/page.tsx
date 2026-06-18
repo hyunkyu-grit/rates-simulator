@@ -86,6 +86,7 @@ export default function PortfolioDashboard() {
             baseDate={baseDate} 
             fundingRate={fundingRate} 
             shockCurves={scenarioShockCurves}
+            dailyShockCurves={dailyShockCurves}
             irsParRates={irsParRates}
             onMetricsUpdate={setMetrics}
           />

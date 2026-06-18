@@ -320,18 +320,29 @@ export default function ExcelUploader({ onDataLoaded, onParRatesLoaded, baseDate
     evaluationAmount: Number(row['평가금액']) || 0,
     remainingDays: Math.round(t_maturity * 365),
     tenor: '10Y',
-    couponRate,           // 고정금리 (% 단위) — 백엔드 PVBP 산출용
+    frequency: 4,          // IRS 분기 지급 (4회/년)
+    couponRate,            // 고정금리 (% 단위) — 백엔드 PVBP 산출용
     direction,             // +1=receive-fixed, -1=pay-fixed
     currentFloatRate,      // 변동금리 (% 단위) — 백엔드 PVBP 산출용
     pvbp: 0,
     entryYield: 0,
+    entryYieldPurchase: 0,
+    durationWeight: 0,
     duration: t_maturity * 0.95 * direction,
     krdMap: {},
-    nextFixingDate: nextCouponDate,
+    // nextFixingDate: ISO 문자열로 직렬화하여 백엔드 str|None 타입과 일치
+    nextFixingDate: nextCouponDate instanceof Date && !isNaN(nextCouponDate.getTime())
+      ? nextCouponDate.toISOString().slice(0, 10)
+      : null,
     expectedDeltaPnL: 0,
     expectedThetaPnL: 0
   };
-}).filter(Boolean);
+}).filter((item: any) =>
+  // 유효한 IRS 행만 통과 — 헤더/빈 행, 액면 0, 만기 도래 행 제거
+  item !== null &&
+  item.notional > 0 &&
+  item.remainingDays > 1
+);
         }
 
         const validPositions = [...parsedBonds, ...parsedIRS];

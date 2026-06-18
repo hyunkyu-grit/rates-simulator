@@ -135,3 +135,9 @@ ytm-calculator/
 └── types/
     └── portfolio.ts             # 공유 TypeScript 인터페이스
 ```
+
+
+## 각각 서버 켜는 방법
+프론트 - npm run dev
+백엔드 .\backend\venv\Scripts\Activate.ps1
+uvicorn backend.main:app --reload

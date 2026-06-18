@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Literal
 from datetime import date, timedelta
+import numpy as np
 import pandas as pd
 import quant_engine as qe
 
@@ -86,7 +87,8 @@ class FrontendShockCurves(BaseModel):
 
 class SimulateRequest(BaseModel):
     positions: list[FrontendPosition]
-    shockCurves: FrontendShockCurves | None = None
+    shockCurves: FrontendShockCurves | None = None         # 시나리오 충격 (chartData 전용)
+    dailyShockCurves: FrontendShockCurves | None = None    # 당일 실제 금리변동 (bookDailyPnL 전용)
     fundingRate: float = 0.042
     fundingEvents: list[dict] = []
     simDays: int = 90
@@ -255,9 +257,7 @@ def calculate_daily_carry(
                 carry_rate = (p.mtmYield or 0.0) + shock_bp / 100.0
                 total += (eval_amt * (carry_rate / 100.0)) / 365.0 - (eval_amt * active_funding_rate) / 365.0
         else:
-            if matured:
-                continue  # IRS 만기: theta 정지
-            total += (p.expectedThetaPnL or 0.0)
+            continue  # IRS carry는 FM 엔진(irs_fm_carry)이 전담 — static theta 이중 계산 방지
     return total
 
 
@@ -274,6 +274,25 @@ def calc_dynamic_funding_rate(base_rate: float, funding_events: list[dict], curr
 
 # ── 4가지 결과 산출 함수 ──────────────────────────────────────────────────────
 
+def _build_irs_shock_curve(
+    shock_mode: str,
+    base_shock_bp: float,
+    shock_curves: FrontendShockCurves | None,
+) -> list[tuple[float, float]]:
+    """IRS FM용 (tenor_years, shock_bp) 충격 커브 구성.
+    평행이동: [(0, bp), (30, bp)] 플랫 커브.
+    비평행이동: swapCurve [{t, val}] → [(t, val), ...] 변환.
+    """
+    if shock_mode == "parallel" or not shock_curves or not shock_curves.swapCurve:
+        return [(0.0, base_shock_bp), (30.0, base_shock_bp)]
+    parsed = [
+        (float(p.get("t", 0)), float(p.get("val", 0)))
+        for p in shock_curves.swapCurve
+        if float(p.get("t", 0)) > 0
+    ]
+    return parsed if parsed else [(0.0, base_shock_bp), (30.0, base_shock_bp)]
+
+
 def build_chart_data(
     positions: list[FrontendPosition],
     shock_curves: FrontendShockCurves | None,
@@ -284,6 +303,8 @@ def build_chart_data(
     shock_mode: str,
     base_shock_bp: float,
     base_date_str: str,
+    irs_curves: list[dict] | None = None,
+    irs_shock_curve_prebuilt: list[tuple[float, float]] | None = None,
 ) -> tuple[list[dict], dict]:
     try:
         base_date = date.fromisoformat(base_date_str)
@@ -295,17 +316,89 @@ def build_chart_data(
     break_even_day = -1
     is_broken_even = False
 
-    # 만기 체권을 재투자 Cash Pool로 추적
+    # 만기 채권을 재투자 Cash Pool로 추적
     bond_positions = [p for p in positions if p.bondType != "swap"]
+    irs_positions  = [p for p in positions if p.bondType == "swap"]
+
+    # ── IRS FM(Full Revaluation) 경로 사전 계산 ─────────────────────────────
+    par_rates       = qe.parse_irs_curves(irs_curves or [])
+    irs_fm_mtm      = np.zeros(sim_days + 1)   # 포트폴리오 합산 MTM 궤적
+    irs_fm_carry    = np.zeros(sim_days + 1)   # FM 파생 일별 캐리 (리픽싱 비선형 포함)
+    # Bug 1: 포트폴리오 합산 일별 NPV / 정산 CF 배열
+    port_npv_s      = np.zeros(sim_days + 1)
+    port_npv_b      = np.zeros(sim_days + 1)
+    port_scf_b      = np.zeros(sim_days + 1)
+    port_scf_s      = np.zeros(sim_days + 1)
+    first_pos_audit_rows: list[dict] = []      # 포트폴리오 CSV용 첫 번째 종목 상세 데이터
+    print(f"[BUILD] IRS 종목 {len(irs_positions)}개 시뮬레이션 시작 (bond≈{len(bond_positions)}개)")
+    irs_shock_curve = (
+        irs_shock_curve_prebuilt
+        if irs_shock_curve_prebuilt is not None
+        else _build_irs_shock_curve(shock_mode, base_shock_bp, shock_curves)
+    )
+
+    for i, p in enumerate(irs_positions):
+        t_mat = max(float(p.remainingDays or 0) / 365.0, 1 / 365)
+        if p.nextFixingDate:
+            try:
+                nfd   = date.fromisoformat(str(p.nextFixingDate)[:10])
+                ref   = date.fromisoformat(base_date_str[:10])
+                t_next = max((nfd - ref).days, 1) / 365.0
+            except Exception:
+                t_next = 0.25
+        else:
+            t_next = t_mat * 0.1 if t_mat < 0.25 else 0.25
+        t_next = max(min(t_next, t_mat), 1.0 / 365.0)
+
+        print(f"  [T_NEXT] 종목 {i+1} id={getattr(p,'id','')} "
+              f"nextFixingDate={p.nextFixingDate!r} "
+              f"remainingDays={p.remainingDays} t_mat={t_mat:.4f}Y "
+              f"→ t_next={t_next:.4f}Y ({round(t_next*365)}일)")
+        try:
+            mtm_arr, _, carry_arr, metrics, pos_audit = qe.simulate_irs_path_fm(
+                par_rates              = par_rates,
+                notional               = p.notional or 0.0,
+                fixed_rate_pct         = p.couponRate or 0.0,
+                direction              = int(p.direction or 1),
+                t_maturity             = t_mat,
+                t_next_payment         = t_next,
+                current_float_rate_pct = p.currentFloatRate or 0.0,
+                sector                 = p.sector or "IRS",
+                shock_curve            = irs_shock_curve,
+                days_to_simulate       = sim_days,
+                shock_type             = shock_type,
+                base_date_str          = base_date_str,
+                audit                  = (i == 0 and sim_days > 0),
+            )
+            irs_fm_mtm   += mtm_arr
+            irs_fm_carry += carry_arr
+            # Bug 1: 포트폴리오 NPV / CF 합산 (모든 종목 += 로 누적)
+            port_npv_s   += metrics["npv_s"]
+            port_npv_b   += metrics["npv_b"]
+            port_scf_b   += metrics["scf_b"]
+            port_scf_s   += metrics["scf_s"]
+            if i == 0:
+                first_pos_audit_rows = pos_audit   # 첫 번째 종목 커브/금리 상세 데이터 보존
+            print(f"  [BUILD] 종목 {i+1}/{len(irs_positions)} id={getattr(p, 'id', '')} "
+                  f"notional={p.notional:,.0f} dir={p.direction} → 최종 MTM={mtm_arr[-1]:,.0f}")
+        except Exception as e:
+            import traceback as _tb
+            print(f"=== [CRITICAL] 엔진 크래시 상세 추적 ({getattr(p, 'id', '')}) ===")
+            _tb.print_exc()
+            raise ValueError(f"FM Engine Crash ({getattr(p, 'id', '')}): {e}") from e
 
     for t in range(sim_days + 1):
         current_date = base_date + timedelta(days=t)
         multiplier = (t / sim_days) if shock_type == "ramp" else (1.0 if t > 0 else 0.0)
         active_rate = calc_dynamic_funding_rate(funding_rate, funding_events, current_date)
 
-        daily_mtm = calculate_daily_mtm(positions, shock_mode, shock_type, base_shock_bp, shock_curves, multiplier, t, current_date)
-        daily_carry = calculate_daily_carry(positions, shock_mode, shock_type, base_shock_bp, shock_curves, active_rate, multiplier, t, current_date)
-
+        # 채권: 기존 선형 MTM / IRS: FM 결과 직접 사용 (내부에서 이미 ramp/step 적용)
+        bond_mtm  = calculate_daily_mtm(bond_positions, shock_mode, shock_type, base_shock_bp, shock_curves, multiplier, t, current_date)
+        daily_mtm = bond_mtm + float(irs_fm_mtm[t])
+        # 일별 캐리: 채권만 calculate_daily_carry, IRS는 FM 엔진 리턴 값 사용 (리픽싱 비선형 반영)
+        bond_carry = calculate_daily_carry(bond_positions, shock_mode, shock_type, base_shock_bp, shock_curves, active_rate, multiplier, t, current_date)
+        irs_carry_t = float(irs_fm_carry[t])
+        daily_carry = bond_carry + irs_carry_t
         # 만기 체권의 재투자 수익: Notional 기준으로 Funding Cost와 정확히 상쿠
         reinvested_cash = sum(
             p.notional or 0.0
@@ -315,6 +408,10 @@ def build_chart_data(
         daily_cash_return = reinvested_cash * active_rate / 365.0
 
         cumulative_carry += (daily_carry or 0.0) + daily_cash_return
+        if abs(irs_carry_t) > 50_000_000 or abs(daily_cash_return) > 50_000_000:
+            print(f"[CARRY-DIAG] Day {t}: irs_carry={irs_carry_t:,.0f}  "
+                  f"bond_carry={bond_carry:,.0f}  cash_return={daily_cash_return:,.0f}  "
+                  f"cum_carry={cumulative_carry:,.0f}")
         total_pnl = daily_mtm + cumulative_carry
 
         if total_pnl >= 0 and daily_mtm < 0 and not is_broken_even:
@@ -335,6 +432,56 @@ def build_chart_data(
         "finalTotal": last.get("totalPnL", 0),
         "breakEvenDay": break_even_day,
     }
+
+    # ── 포트폴리오 합산 Audit CSV (종목별 덮어쓰기 없이, 시뮬레이션 종료 후 1회 저장) ──
+    if sim_days > 0 and chart_data:
+        try:
+            from pathlib import Path
+
+            # 포트폴리오 일별 요약 (좌측 콜럼: chart 3종 + 우측 콜럼: Bug 1 합산값)
+            port_rows = []
+            for row in chart_data:
+                t = row["day"]
+                port_rows.append({
+                    "Day":                    t,
+                    "Portfolio_MTM":          row["mtmPnL"],
+                    "Portfolio_Cum_Carry":    row["cumulativeCarry"],
+                    "Portfolio_Total":        row["totalPnL"],
+                    # Bug 1: 모든 IRS 종목 합산된 포트폴리오 레벨 NPV / CF
+                    "Port_NPV_Shocked":       round(float(port_npv_s[t])) if t < len(port_npv_s) else 0,
+                    "Port_NPV_Base":          round(float(port_npv_b[t])) if t < len(port_npv_b) else 0,
+                    "Port_Settled_CF_Base":   round(float(port_scf_b[t])) if t < len(port_scf_b) else 0,
+                    "Port_Settled_CF_Shock":  round(float(port_scf_s[t])) if t < len(port_scf_s) else 0,
+                    "Port_Daily_IRS_Carry":   round(float(irs_fm_carry[t])) if t < len(irs_fm_carry) else 0,
+                    "Port_Daily_IRS_MTM":     round(float(irs_fm_mtm[t])) if t < len(irs_fm_mtm) else 0,
+                })
+            port_df = pd.DataFrame(port_rows)
+
+            # 첫 번째 IRS 종목의 커브/금리 상세 콜럼만 병합 (포트폴리오 레벨 NPV/CF는 위에서 이미 포함)
+            if first_pos_audit_rows:
+                detail_df = pd.DataFrame(first_pos_audit_rows)
+                # NPV/CF 콜럼은 포트폴리오 합산값으로 대체하므로 제외
+                exclude = {"NPV_Shocked", "NPV_Base", "Settled_CF_Base",
+                           "Settled_CF_Shock", "Cum_CF_Diff",
+                           "Daily_FM_Carry", "Daily_Clean_MTM"}
+                # "Day"는 detail_df.columns에 이미 존재 — 중복 삽입 금지
+                curve_cols = [c for c in detail_df.columns if c not in exclude]
+                audit_df = port_df.merge(detail_df[curve_cols], on="Day", how="left")
+            else:
+                audit_df = port_df
+
+            out_path = Path(__file__).resolve().parent.parent / "fm_simulation_audit.csv"
+            audit_df.to_csv(out_path, index=False, encoding="utf-8-sig")
+            print(f"\n[AUDIT] ══ 포트폴리오 합산 Audit CSV 저장 완료 ══")
+            print(f"[AUDIT] 경로: {out_path}")
+            print(f"[AUDIT] {len(irs_positions)}개 IRS 종목 합산 | {len(audit_df)}행 | {len(audit_df.columns)}콜럼")
+            print(audit_df[["Day","Portfolio_MTM","Portfolio_Cum_Carry",
+                             "Port_NPV_Base","Port_Settled_CF_Base"]].head(5).to_string(index=False))
+            if len(audit_df) > 5:
+                print(f"... (이하 {len(audit_df)-5}행 생략 — 전체는 CSV 참조)\n")
+        except Exception as _ae:
+            print(f"[AUDIT] CSV 저장 실패 (시뮬레이션 결과는 정상): {_ae}")
+
     return chart_data, summary
 
 
@@ -507,8 +654,38 @@ def enrich_irs_pvbp(
 
 @app.post("/api/simulate")
 def simulate(req: SimulateRequest):
-    # IRS 포지션에 백엔드 프라이싱 결과 주입
-    positions = enrich_irs_pvbp(req.positions, req.irsCurves, req.baseDate)
+    # ── [DEBUG] 엔드포인트 진입 즉시 확인 (가장 먼저 실행) ────────────────────
+    print("\n" + "="*60)
+    print("=== [DEBUG] /api/simulate 진입 ===")
+    print(f"  positions={len(req.positions)}  simDays={req.simDays}")
+    print(f"  shockMode={req.shockMode!r}  shockType={req.shockType!r}  baseShockBp={req.baseShockBp}")
+    print(f"  irsCurves_len={len(req.irsCurves)}  shockCurves={req.shockCurves is not None}")
+
+    # ── Shock Curve 명시적 빌드 (엔드포인트 레벨) ────────────────────────────
+    _swap_raw = req.shockCurves.swapCurve if req.shockCurves else []
+    if req.shockMode == "matrix" and _swap_raw:
+        _parsed = [
+            (float(p.get("t", 0)), float(p.get("val", 0)))
+            for p in _swap_raw
+            if float(p.get("t", 0)) > 0
+        ]
+        irs_shock_curve = _parsed if _parsed else [(0.0, req.baseShockBp), (30.0, req.baseShockBp)]
+    else:
+        irs_shock_curve = [(0.0, req.baseShockBp), (30.0, req.baseShockBp)]
+
+    parsed_shock_curve = {f"{t}Y": round(bp, 4) for t, bp in irs_shock_curve}
+    print("=== [DEBUG] /api/simulate Parsed Shock ===", parsed_shock_curve)
+    print(f"  swapCurve_raw_len={len(_swap_raw)}  irs_shock_curve_nodes={len(irs_shock_curve)}")
+    print("="*60)
+
+    # ── IRS 포지션에 백엔드 프라이싱 결과 주입 ────────────────────────────────
+    try:
+        positions = enrich_irs_pvbp(req.positions, req.irsCurves, req.baseDate)
+    except Exception as _e:
+        import traceback as _tb
+        print(f"[CRITICAL] enrich_irs_pvbp 실패: {_e}")
+        print(_tb.format_exc())
+        raise
 
     funding_events = req.fundingEvents or (req.shockCurves.fundingEvents if req.shockCurves else [])
 
@@ -522,9 +699,13 @@ def simulate(req: SimulateRequest):
         shock_mode=req.shockMode,
         base_shock_bp=req.baseShockBp,
         base_date_str=req.baseDate,
+        irs_curves=req.irsCurves,
+        irs_shock_curve_prebuilt=irs_shock_curve,
     )
     pvbp_sensitivity = build_pvbp_sensitivity(positions)
-    book_daily_pnls = build_book_daily_pnl(positions, req.shockCurves, req.fundingRate)
+    # bookDailyPnL: 당일 실제 금리변동만 반영. dailyShockCurves 없으면 shockCurves로 fallback
+    daily_curves = req.dailyShockCurves if req.dailyShockCurves is not None else req.shockCurves
+    book_daily_pnls = build_book_daily_pnl(positions, daily_curves, req.fundingRate)
 
     # ── DEBUG: IRS Raw Data 터미널 출력 ─────────────────────────────────────────
     irs_pos = [p for p in positions if p.bondType == "swap"]
