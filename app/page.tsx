@@ -1,25 +1,16 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { createClient } from '@supabase/supabase-js';
-import { 
-  differenceInDays, 
-  differenceInYears, 
-  parseISO, 
+import {
+  differenceInDays,
+  differenceInYears,
+  parseISO,
   format,
   addMonths,
   isAfter,
   isBefore
 } from 'date-fns';
 import Navigation from '../components/Navigation';
-
-console.log("URL:", process.env.NEXT_PUBLIC_SUPABASE_URL);
-console.log("KEY:", process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.substring(0, 10) + "...");
-
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-);
 
 interface BondCalculationRecord {
   id: number;
