@@ -10,15 +10,10 @@ import quant_engine as qe
 
 app = FastAPI()
 
-ALLOWED_ORIGINS = [
-    "http://localhost:3000",
-    os.environ.get("FRONTEND_URL", ""),  # Render 환경변수로 Vercel URL 주입
-]
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[o for o in ALLOWED_ORIGINS if o],
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
