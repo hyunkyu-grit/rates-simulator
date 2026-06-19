@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import {
   differenceInDays,
   differenceInYears,
@@ -11,6 +12,12 @@ import {
   isBefore
 } from 'date-fns';
 import Navigation from '../components/Navigation';
+
+// 환경변수가 없으면 null — Vercel 배포 시 Supabase 없이도 빌드 통과
+const _supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const _supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+const supabase: SupabaseClient | null =
+  _supabaseUrl && _supabaseKey ? createClient(_supabaseUrl, _supabaseKey) : null;
 
 interface BondCalculationRecord {
   id: number;
@@ -61,6 +68,7 @@ export default function BondPriceCalculator() {
   }, []);
 
   const fetchCalculationHistory = async () => {
+    if (!supabase) { setCalculationHistory([]); return; }
     try {
       console.log("데이터 조회 시작...");
       const { data, error } = await supabase
@@ -303,19 +311,21 @@ export default function BondPriceCalculator() {
         bond_type: typeof bondType
       });
 
-      const { data, error } = await supabase
-        .from('bond_price_history')
-        .insert([insertData])
-        .select();
+      if (supabase) {
+        const { data, error } = await supabase
+          .from('bond_price_history')
+          .insert([insertData])
+          .select();
 
-      if (error) {
-        console.error("저장 에러 상세:", error.message, error.details, error.hint, error);
-        alert(`데이터 저장 오류: ${error.message || JSON.stringify(error)}`);
-        return;
+        if (error) {
+          console.error("저장 에러 상세:", error.message, error.details, error.hint, error);
+          alert(`데이터 저장 오류: ${error.message || JSON.stringify(error)}`);
+          return;
+        }
+
+        // 저장 성공 후 데이터 다시 불러오기
+        await fetchCalculationHistory();
       }
-
-      // 저장 성공 후 데이터 다시 불러오기
-      await fetchCalculationHistory();
       
     } catch (error) {
       console.error('계산 실패:', error);
@@ -325,23 +335,25 @@ export default function BondPriceCalculator() {
 
   const deleteRecord = async (id: number) => {
     setDeletingId(id);
-    
-    try {
-      const { error } = await supabase
-        .from('bond_price_history')
-        .delete()
-        .eq('id', id);
 
-      if (error) {
-        console.error('데이터 삭제 오류:', error);
-        alert('데이터 삭제에 실패했습니다.');
-        setDeletingId(null);
-        return;
+    try {
+      if (supabase) {
+        const { error } = await supabase
+          .from('bond_price_history')
+          .delete()
+          .eq('id', id);
+
+        if (error) {
+          console.error('데이터 삭제 오류:', error);
+          alert('데이터 삭제에 실패했습니다.');
+          setDeletingId(null);
+          return;
+        }
       }
 
-      // 삭제 성공 후 상태에서 바로 제거
+      // 삭제 성공(또는 Supabase 미설정) 시 상태에서 제거
       setCalculationHistory(prev => prev.filter(record => record.id !== id));
-      
+
     } catch (error) {
       console.error('삭제 실패:', error);
       alert('데이터 삭제 중 오류가 발생했습니다.');
