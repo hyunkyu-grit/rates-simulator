@@ -569,12 +569,20 @@ def simulate_irs_path_fm(
         print(f"[ENGINE] currentFloatRate=0 → base 3M forward {_fwd:.4f}% 사용")
         current_float_rate_pct = _fwd
 
+    # ── 커브 사전 계산: step shock은 Day 1 이후 충격 커브가 고정 → 1회만 부트스트래핑 ──
+    # ramp shock은 매일 factor가 달라 캐싱 불가 → 루프 내 계산
+    _zc_full   = _zc(1.0)   # factor=1.0 충격 커브 (Day 0 PVBP + step 전 구간 공용)
+    _zc_full1b = bootstrap_zero_curve(
+        [(t, r + float(np.interp(t, _sc_t, _sc_bp)) * SHIFT + SHIFT)
+         for t, r in par_anch]
+    )  # factor=1.0 + 1bp 추가 커브 (step 전 구간 PVBP 공용)
+
     # ── Day 0: 참조 상태, MTM = 0  / PVBP는 base 커브 기준 1bp 병렬이동 ───────
     t0_nxt = max(t_next_payment, DT)
     daily_pvbp[0] = -(
         compute_irs_npv(notional, fixed_rate_pct, direction,
                         t_maturity, t0_nxt, current_float_rate_pct,
-                        sector, _zc(1.0), fixed_freq, float_freq)
+                        sector, _zc_full, fixed_freq, float_freq)
         - compute_irs_npv(notional, fixed_rate_pct, direction,
                           t_maturity, t0_nxt, current_float_rate_pct,
                           sector, zc_base, fixed_freq, float_freq)
@@ -629,13 +637,18 @@ def simulate_irs_path_fm(
             # 2. 해당 일차 충격 비율 (step / ramp)
             factor = (day / max(days_to_simulate, 1)) if shock_type == "ramp" else 1.0
 
-            # 3. 해당 일차 제로커브 생성 (매일 새로 부트스트래핑)
-            zc_s  = _zc(factor)
-            # PVBP용: 충격 커브 위에 flat +1bp 독립 추가 (shock 형태와 무관)
-            zc_s1 = bootstrap_zero_curve(
-                [(t, r + float(np.interp(t, _sc_t, _sc_bp)) * factor * SHIFT + SHIFT)
-                 for t, r in par_anch]
-            )
+            # 3. 해당 일차 제로커브 생성
+            # step: 매일 factor=1.0 고정 → 사전 계산된 커브 재사용 (핵심 최적화)
+            # ramp: 매일 factor가 달라 새로 부트스트래핑 불가피
+            if shock_type == "step":
+                zc_s  = _zc_full
+                zc_s1 = _zc_full1b
+            else:
+                zc_s  = _zc(factor)
+                zc_s1 = bootstrap_zero_curve(
+                    [(t, r + float(np.interp(t, _sc_t, _sc_bp)) * factor * SHIFT + SHIFT)
+                     for t, r in par_anch]
+                )
 
             # 4. 구 픽싱 저장 (정산액 계산용 — 만기/리픽싱 공통)
             flt_s_old = flt_s
@@ -653,15 +666,6 @@ def simulate_irs_path_fm(
                 refixed_b = True
                 flt_b     = forward_rate_simple(0.0, float_freq, zc_base) * 100.0
                 t_nxt_b   = min(float_freq, t_mat_b)
-                # ── 리픽싱 진단 프린트 ─────────────────────────────────────────────
-                print(
-                    f"[REFIX-DIAG] Day={day} "
-                    f"dir={direction} notional={notional:,.0f} "
-                    f"fixed={fixed_rate_pct:.4f}% "
-                    f"flt_old={flt_b_old:.6f}% flt_new={flt_b:.6f}% "
-                    f"t_mat={t_mat_b:.4f}Y t_nxt_reset={t_nxt_b:.4f}Y "
-                    f"npv_b_prev={npv_b_prev:,.0f}"
-                )
 
             # 6. 정산 현금흐름 (사용자 지정 공식: Net CF Netting 보장)
             #    Receive Fixed (+1): net_rate = fixed - float  → CF = N × net_rate/100 × freq
@@ -745,14 +749,6 @@ def simulate_irs_path_fm(
             mtm_pnl[day]     = (npv_s - npv_s_initial) + cum_cf_s
             daily_pvbp[day]  = -(npv_s1 - npv_s)
             daily_carry[day] = 0.0  # IRS carry 없음 — 전부 MTM
-            if refixed_s:
-                print(
-                    f"[REFIX-MTM] Day={day} "
-                    f"flt_s_old={flt_s_old:.4f}% flt_s_new={flt_s:.4f}% "
-                    f"settled_cf_s={settled_cf_s:,.0f} "
-                    f"npv_s={npv_s:,.0f} cum_cf_s={cum_cf_s:,.0f} "
-                    f"total_mtm={mtm_pnl[day]:,.0f}"
-                )
             npv_b_prev       = npv_b
 
             # Bug 1: 포트폴리오 집계용 일별 NPV / 정산 CF 기록
