@@ -139,5 +139,5 @@ ytm-calculator/
 
 ## 각각 서버 켜는 방법
 프론트 - npm run dev
-백엔드 .\backend\venv\Scripts\Activate.ps1
-uvicorn backend.main:app --reload
+백엔드 .\venv\Scripts\Activate.ps1
+uvicorn main:app --reload
