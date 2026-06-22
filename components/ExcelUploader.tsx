@@ -260,9 +260,11 @@ export default function ExcelUploader({ onDataLoaded, onParRatesLoaded, baseDate
               const daysToMaturity = Math.max(0, differenceInDays(maturityDate, pricingDate));
               const t_maturity = daysToMaturity / 365;
 
-              const notional = Number(row['현재액면(원화)']) || 0;
+              const rawNotional = Number(row['현재액면(원화)']) || 0;
+              const notional = Math.abs(rawNotional);
               const sector = String(row['기초자산1']).includes('CD') ? 'IRS' : 'OIS';
-              const direction = String(row['지급 수취']).trim() === '수취' ? 1 : -1; 
+              const rawDirection = String(row['지급 수취']).trim() === '수취' ? 1 : -1;
+              const direction = rawNotional < 0 ? -rawDirection : rawDirection;
 
               const fixedRateStr = row['구조화쿠폰'] || row['계약이율'] || row['표면이율'] || row['고정금리'] || row['이율'];
               const couponRate = fixedRateStr ? Number(fixedRateStr) : 3.5;  
