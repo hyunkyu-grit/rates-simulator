@@ -48,3 +48,6 @@ backend/__pycache__/
 # data files
 *.xlsx
 *.xls
+
+# runtime-generated audit files
+fm_simulation_audit.csv
