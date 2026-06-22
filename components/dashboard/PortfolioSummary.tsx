@@ -9,7 +9,6 @@ export default function PortfolioSummary({ data }: PortfolioSummaryProps) {
     <div className="bg-gray-800 rounded-lg p-4 shadow-xl">
       <div className="flex justify-between items-center mb-3">
         <h2 className="text-lg font-semibold text-blue-300">북별 컴팩트 요약</h2>
-        <span className="text-xs text-gray-400">실전 딜링룸 스타일</span>
       </div>
       <div className="space-y-3">
         {data.map(summary => (

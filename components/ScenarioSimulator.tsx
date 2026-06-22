@@ -223,7 +223,7 @@ export default function ScenarioSimulator({ positions, baseDate, fundingRate, sh
           <>
             <div className="flex justify-between items-end mb-4">
               <div>
-                <h2 className="text-xl font-bold text-blue-300">Total Return 누적 궤적 (Nike Swoosh)</h2>
+                <h2 className="text-xl font-bold text-blue-300">Total Return 누적 궤적</h2>
                 <p className="text-xs text-gray-400 mt-1">자본손익(MTM)과 이자수익(Carry)의 상쇄 효과 분석</p>
               </div>
               <div className="flex space-x-4 bg-gray-900 p-3 rounded-lg border border-gray-700">

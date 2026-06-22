@@ -12,7 +12,6 @@ export default function BookPnLTable({ data }: BookPnLTableProps) {
     <div className="bg-gray-800 rounded-lg p-4 shadow-xl">
       <div className="flex justify-between items-center mb-3">
         <h2 className="text-lg font-semibold text-blue-300">북별 당일 예상 손익</h2>
-        <span className="text-xs text-gray-400">기관 트레이더 방식 Daily P&L</span>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-xs">
