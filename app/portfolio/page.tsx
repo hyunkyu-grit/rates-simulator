@@ -101,7 +101,6 @@ export default function PortfolioDashboard() {
       <div className="container mx-auto p-4">
         <div className="flex flex-col space-y-4 mb-6">
           <div className="flex justify-between items-center">
-            <h1 className="text-2xl font-bold text-blue-300">포트폴리오 통합 관제 시스템</h1>
             <div className="flex items-center space-x-4">
               <div className="flex items-center space-x-2">
                 <label className="text-sm text-gray-400">기준일자:</label>
@@ -115,7 +114,7 @@ export default function PortfolioDashboard() {
             </div>
           </div>
           <div className="flex space-x-1 bg-gray-800 p-1 rounded-lg">
-            <button onClick={() => setActiveTab('dashboard')} className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${activeTab === 'dashboard' ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-white hover:bg-gray-700'}`}>포트폴리오 대시보드</button>
+            <button onClick={() => setActiveTab('dashboard')} className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${activeTab === 'dashboard' ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-white hover:bg-gray-700'}`}>포트폴리오 관리</button>
             <button onClick={() => setActiveTab('scenario')} className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${activeTab === 'scenario' ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-white hover:bg-gray-700'}`}>시나리오 P&L 예측</button>
           </div>
         </div>
