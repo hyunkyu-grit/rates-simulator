@@ -12,6 +12,7 @@ interface Props {
   simDays: number;
   baseShockBp: number;
   waypoints?: { day: number; bp: number }[];
+  fundingSteps?: { day: number; cumBp: number }[];
 }
 
 type ViewMode = 'termstructure' | 'timepath';
@@ -59,8 +60,17 @@ function lerpWaypoints(day: number, sorted: { day: number; bp: number }[]): numb
   return 0;
 }
 
+function lookupFunding(day: number, steps: { day: number; cumBp: number }[]): number {
+  let cum = 0;
+  for (const s of steps) {
+    if (s.day <= day) cum = s.cumBp;
+    else break;
+  }
+  return cum;
+}
+
 export default function ScenarioPreviewChart({
-  shockCurves, simDays, baseShockBp, waypoints,
+  shockCurves, simDays, baseShockBp, waypoints, fundingSteps,
 }: Props) {
   const [viewMode, setViewMode] = useState<ViewMode>('timepath');
   const [selectedSector, setSelectedSector] = useState<string>('전체');
@@ -103,7 +113,8 @@ export default function ScenarioPreviewChart({
     });
   }, [activeCurves]);
 
-  // 시계열형: 웨이포인트 기반 국채 3Y 경로
+  // 시계열형: 웨이포인트 기반 국채 3Y + 기준금리 경로
+  const hasFundingSteps = !!(fundingSteps && fundingSteps.length > 0);
   const timeData = useMemo(() => {
     const sorted = waypoints ? [...waypoints].sort((a, b) => a.day - b.day) : [];
     const maxDay = sorted.length > 0 ? sorted[sorted.length - 1].day : simDays;
@@ -113,14 +124,20 @@ export default function ScenarioPreviewChart({
     for (let d = step; d < maxDay; d += step) daySet.add(d);
     daySet.add(maxDay);
     sorted.forEach(w => daySet.add(w.day));
+    // 이벤트 당일과 직전 포인트도 추가해 수직 계단 시각화
+    (fundingSteps ?? []).forEach(s => { if (s.day > 0) daySet.add(s.day - 1); daySet.add(s.day); });
 
     return [...daySet].sort((a, b) => a - b).map(day => {
       const bp = sorted.length >= 2
         ? lerpWaypoints(day, sorted)
         : (day / simDays) * baseShockBp;
-      return { day: `D+${day}`, '국채 3Y': parseFloat(bp.toFixed(2)) };
+      const row: Record<string, any> = { day: `D+${day}`, '국채 3Y': parseFloat(bp.toFixed(2)) };
+      if (hasFundingSteps) {
+        row['기준금리'] = lookupFunding(day, fundingSteps!);
+      }
+      return row;
     });
-  }, [waypoints, simDays, baseShockBp]);
+  }, [waypoints, simDays, baseShockBp, fundingSteps, hasFundingSteps]);
 
   const waypointDaySet = useMemo(
     () => new Set((waypoints ?? []).map(w => `D+${w.day}`)),
@@ -237,6 +254,17 @@ export default function ScenarioPreviewChart({
                   );
                 }}
               />
+              {hasFundingSteps && (
+                <Line
+                  dataKey="기준금리"
+                  stroke="#A78BFA"
+                  strokeWidth={2}
+                  strokeDasharray="6 3"
+                  type="linear"
+                  dot={false}
+                  activeDot={{ r: 3 }}
+                />
+              )}
             </LineChart>
           </ResponsiveContainer>
         )}
@@ -246,7 +274,7 @@ export default function ScenarioPreviewChart({
       <p className="text-xs text-gray-500 mt-2 text-center flex-shrink-0">
         {viewMode === 'termstructure'
           ? `점선: 현재 커브 · 실선: 충격 후 예상 커브 (최종 ${baseShockBp >= 0 ? '+' : ''}${baseShockBp}bp)`
-          : `● = 웨이포인트 · 국채 3Y 기준 경로 · D+${simDays} 최종 ${baseShockBp >= 0 ? '+' : ''}${baseShockBp}bp`}
+          : `● = 웨이포인트 · 국채 3Y 기준 경로 · D+${simDays} 최종 ${baseShockBp >= 0 ? '+' : ''}${baseShockBp}bp${hasFundingSteps ? ' · 점선 = 기준금리 누적 변동' : ''}`}
       </p>
     </div>
   );

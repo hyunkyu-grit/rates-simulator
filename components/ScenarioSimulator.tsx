@@ -69,6 +69,11 @@ export default function ScenarioSimulator({ positions, baseDate, fundingRate, sh
   const [creditSpreads, setCreditSpreads] = useState<Record<string, string>>({ '특은채': '0', '은행채': '0', '카드채': '0', '회사채': '0' });
   const [irsSpread, setIrsSpread] = useState<string>('0');
   const [spreadsOpen, setSpreadsOpen] = useState<boolean>(false);
+  const [eventsOpen, setEventsOpen] = useState<boolean>(false);
+  const [shortEndEvents, setShortEndEvents] = useState<{ id: number; date: string; shiftBp: string }[]>(
+    () => (propFundingEvents ?? []).map((ev, i) => ({ id: i, date: (ev as any).date ?? '', shiftBp: String((ev as any).shiftBp ?? 0) }))
+  );
+  const nextEventId = useRef<number>((propFundingEvents ?? []).length);
   const [isSimulated, setIsSimulated] = useState<boolean>(false);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -113,6 +118,29 @@ export default function ScenarioSimulator({ positions, baseDate, fundingRate, sh
     setWaypoints(prev => prev.map(w => w.day === day ? { ...w, bp } : w));
   };
 
+  const fundingSteps = useMemo(() => {
+    if (!baseDate) return [] as { day: number; cumBp: number }[];
+    const base = new Date(baseDate);
+    const events = shortEndEvents
+      .filter(ev => ev.date)
+      .map(ev => ({
+        day: Math.round((new Date(ev.date).getTime() - base.getTime()) / 86400000),
+        shiftBp: toNum(ev.shiftBp),
+      }))
+      .filter(ev => ev.day >= 0 && ev.day <= simDays)
+      .sort((a, b) => a.day - b.day);
+    if (!events.length) return [] as { day: number; cumBp: number }[];
+    const pts: { day: number; cumBp: number }[] = [{ day: 0, cumBp: 0 }];
+    let cum = 0;
+    for (const ev of events) {
+      pts.push({ day: ev.day - 1, cumBp: cum }); // 이벤트 직전 유지
+      cum += ev.shiftBp;
+      pts.push({ day: ev.day, cumBp: cum });      // 이벤트 당일 변동
+    }
+    if (pts[pts.length - 1].day < simDays) pts.push({ day: simDays, cumBp: cum });
+    return pts;
+  }, [shortEndEvents, baseDate, simDays]);
+
   const generatedShockCurves = useMemo(
     () => generateShockCurves(
       toNum(baseShockBp),
@@ -135,7 +163,9 @@ export default function ScenarioSimulator({ positions, baseDate, fundingRate, sh
       shockCurves: generatedShockCurves,
       dailyShockCurves: dailyShockCurves ?? { bondCurves: {}, swapCurve: [], fundingEvents: [] },
       fundingRate,
-      fundingEvents: propFundingEvents ?? [],
+      fundingEvents: shortEndEvents
+        .filter(ev => ev.date)
+        .map(ev => ({ date: ev.date, shiftBp: toNum(ev.shiftBp) })),
       simDays,
       shockType: 'ramp' as const,
       shockMode: 'matrix' as const,
@@ -331,6 +361,79 @@ export default function ScenarioSimulator({ positions, baseDate, fundingRate, sh
           </div>
         </div>
 
+        {/* 금통위 이벤트 설정 */}
+        <div className="border-t border-gray-700 pt-4">
+          <button
+            onClick={() => setEventsOpen(!eventsOpen)}
+            className="flex items-center justify-between w-full text-left"
+          >
+            <span className="text-sm font-medium text-gray-300">
+              금통위 이벤트 (기준금리)
+              {shortEndEvents.filter(ev => ev.date).length > 0 && (
+                <span className="ml-2 text-xs text-purple-400">
+                  {shortEndEvents.filter(ev => ev.date).length}건 등록
+                </span>
+              )}
+            </span>
+            <span className="text-gray-500 text-xs">{eventsOpen ? '▲' : '▼'}</span>
+          </button>
+
+          {eventsOpen && (
+            <div className="mt-3 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-gray-500">날짜 · 변동폭 (bp)</span>
+                <button
+                  onClick={() => {
+                    const id = nextEventId.current++;
+                    setShortEndEvents(prev => [...prev, { id, date: '', shiftBp: '-25' }]);
+                  }}
+                  className="text-xs bg-purple-900/40 hover:bg-purple-800/50 text-purple-300 hover:text-purple-200 border border-purple-700 rounded px-2 py-0.5 transition"
+                >
+                  + 추가
+                </button>
+              </div>
+
+              {shortEndEvents.length === 0 ? (
+                <p className="text-xs text-gray-600 text-center py-2">등록된 이벤트 없음</p>
+              ) : (
+                <div className="space-y-1.5">
+                  {shortEndEvents.map(ev => (
+                    <div key={ev.id} className="flex items-center gap-1.5">
+                      <input
+                        type="date"
+                        value={ev.date}
+                        onChange={e =>
+                          setShortEndEvents(prev =>
+                            prev.map(x => x.id === ev.id ? { ...x, date: e.target.value } : x)
+                          )
+                        }
+                        className="flex-1 bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-gray-300 focus:outline-none focus:border-purple-500"
+                      />
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        value={ev.shiftBp}
+                        onChange={e =>
+                          setShortEndEvents(prev =>
+                            prev.map(x => x.id === ev.id ? { ...x, shiftBp: e.target.value } : x)
+                          )
+                        }
+                        className="w-14 bg-gray-900 border border-gray-700 rounded px-1.5 py-1 text-xs text-right text-white focus:outline-none focus:border-purple-500"
+                        placeholder="bp"
+                      />
+                      <span className="text-xs text-gray-500 flex-shrink-0">bp</span>
+                      <button
+                        onClick={() => setShortEndEvents(prev => prev.filter(x => x.id !== ev.id))}
+                        className="text-gray-500 hover:text-red-400 text-base leading-none flex-shrink-0"
+                      >×</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
         <button
           onClick={runSimulation}
           disabled={isLoading}
@@ -368,6 +471,7 @@ export default function ScenarioSimulator({ positions, baseDate, fundingRate, sh
             simDays={simDays}
             baseShockBp={toNum(baseShockBp)}
             waypoints={waypoints}
+            fundingSteps={fundingSteps}
           />
         ) : (
           <>
