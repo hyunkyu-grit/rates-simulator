@@ -214,6 +214,28 @@ export default function ScenarioSimulator({ positions, baseDate, fundingRate, sh
     return (v >= 0 ? '+' : '') + v.toLocaleString() + '만';
   };
 
+  const DAY_NAMES = ['일', '월', '화', '수', '목', '금', '토'];
+  const offsetToDate = (offset: number): Date => {
+    const [y, m, d] = baseDate.split('-').map(Number);
+    const dt = new Date(y, m - 1, d);
+    dt.setDate(dt.getDate() + offset);
+    return dt;
+  };
+  const fmtTickDate = (offset: number): string => {
+    const dt = offsetToDate(offset);
+    return `${dt.getMonth() + 1}/${dt.getDate()}`;
+  };
+  const fmtTooltipDate = (offset: number): string => {
+    const dt = offsetToDate(offset);
+    const dow = DAY_NAMES[dt.getDay()];
+    const isWeekend = dt.getDay() === 0 || dt.getDay() === 6;
+    return `D+${offset} · ${dt.getFullYear()}.${dt.getMonth() + 1}.${dt.getDate()}(${dow})${isWeekend ? ' 〔주말〕' : ''}`;
+  };
+  const fmtDateShort = (offset: number): string => {
+    const dt = offsetToDate(offset);
+    return `${dt.getFullYear()}.${dt.getMonth() + 1}.${dt.getDate()}`;
+  };
+
   return (
     <div className="grid grid-cols-1 lg:grid-cols-4 gap-4 h-[calc(100vh-120px)]">
       
@@ -517,7 +539,8 @@ export default function ScenarioSimulator({ positions, baseDate, fundingRate, sh
             {summary.breakEvenDay > 0 && (
               <div className="bg-green-900/30 border border-green-800 text-green-300 px-4 py-2 rounded-lg text-sm mb-4 font-medium flex items-center">
                 <span className="mr-2">🎯</span>
-                손익분기점(BEP) 도달: 금리 상승 충격 이후 높아진 캐리 수익으로 인해 <strong className="text-white mx-1">{summary.breakEvenDay}일 차</strong>에 원금을 회복합니다.
+                손익분기점(BEP) 도달: 금리 충격 이후 높아진 캐리 수익으로
+                {' '}<strong className="text-white mx-1">D+{summary.breakEvenDay} ({fmtDateShort(summary.breakEvenDay)})</strong>에 원금을 회복합니다.
               </div>
             )}
 
@@ -525,15 +548,21 @@ export default function ScenarioSimulator({ positions, baseDate, fundingRate, sh
               {chartContainerWidth > 0 && <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={chartData} margin={{ top: 20, right: 30, left: 20, bottom: 5 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#374151" vertical={false} />
-                  <XAxis dataKey="day" stroke="#9CA3AF" tick={{ fill: '#9CA3AF', fontSize: 12 }} tickFormatter={(val) => `D+${val}`} />
+                  <XAxis
+                    dataKey="day"
+                    stroke="#9CA3AF"
+                    tick={{ fill: '#9CA3AF', fontSize: 11 }}
+                    tickFormatter={(val) => fmtTickDate(val)}
+                    interval={Math.max(1, Math.floor(simDays / 8))}
+                  />
                   <YAxis stroke="#9CA3AF" tick={{ fill: '#9CA3AF', fontSize: 12 }} tickFormatter={(val) => `${Math.round(val/10000)}만`} />
-                  <Tooltip 
+                  <Tooltip
                     contentStyle={{ backgroundColor: '#1F2937', borderColor: '#374151', color: '#fff' }}
                     formatter={(value) => {
                       const num = Math.round(Number(value ?? 0));
                       return [(num >= 0 ? '+' : '') + num.toLocaleString() + '원', ''];
                     }}
-                    labelFormatter={(label) => `시뮬레이션 ${label}일 차`}
+                    labelFormatter={(label) => fmtTooltipDate(Number(label))}
                   />
                   <Legend wrapperStyle={{ paddingTop: '20px' }} />
                   <ReferenceLine y={0} stroke="#6B7280" strokeWidth={2} />
