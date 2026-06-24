@@ -453,6 +453,13 @@ def build_chart_data(
         cum_t = sum(e["bp"] for e in _short_evts if e["day"] <= t)
         return cum_t / _cum_short
 
+    def _get_bond_zone(p: FrontendPosition, day: int) -> str:
+        cr = max(float(p.remainingDays or 1) - day, 0.0)
+        r = cr / 365.0
+        if r < 0.25: return "short"
+        if r < 1.0:  return "blend"
+        return "long"
+
     for t in range(sim_days + 1):
         current_date = base_date + timedelta(days=t)
         multiplier = _factor(t)
@@ -462,6 +469,21 @@ def build_chart_data(
         # 채권: 기존 선형 MTM / IRS: FM 결과 직접 사용 (내부에서 이미 ramp/step 적용)
         bond_mtm  = calculate_daily_mtm(bond_positions, shock_mode, shock_type, base_shock_bp, shock_curves, multiplier, t, current_date, short_mult)
         daily_mtm = bond_mtm + float(irs_fm_mtm[t])
+
+        # BOK 이벤트 당일: 구간별(3M미만/3M~1Y/1Y이상) MTM 변화 분해 (검증용)
+        bok_breakdown = None
+        if _short_evts and t > 0 and short_mult != _short_factor(t - 1):
+            prev_mult_bd = _factor(t - 1)
+            prev_sf_bd   = _short_factor(t - 1)
+            prev_date_bd = current_date - timedelta(days=1)
+            bd: dict[str, int] = {}
+            for zone_name in ("short", "blend", "long"):
+                z_cur  = [p for p in bond_positions if p.bondType != "swap" and _get_bond_zone(p, t)     == zone_name]
+                z_prev = [p for p in bond_positions if p.bondType != "swap" and _get_bond_zone(p, t - 1) == zone_name]
+                cur_m  = calculate_daily_mtm(z_cur,  shock_mode, shock_type, base_shock_bp, shock_curves, multiplier,    t,     current_date, short_mult)  if z_cur  else 0.0
+                prev_m = calculate_daily_mtm(z_prev, shock_mode, shock_type, base_shock_bp, shock_curves, prev_mult_bd, t - 1, prev_date_bd, prev_sf_bd) if z_prev else 0.0
+                bd[f"{zone_name}Delta"] = round(cur_m - prev_m)
+            bok_breakdown = bd
         # 일별 캐리: 채권만 calculate_daily_carry, IRS는 FM 엔진 리턴 값 사용 (리픽싱 비선형 반영)
         bond_carry = calculate_daily_carry(bond_positions, shock_mode, shock_type, base_shock_bp, shock_curves, active_rate, multiplier, t, current_date)
         irs_carry_t = float(irs_fm_carry[t])
@@ -485,12 +507,15 @@ def build_chart_data(
             break_even_day = t
             is_broken_even = True
 
-        chart_data.append({
+        entry: dict = {
             "day": t,
             "mtmPnL": round(daily_mtm) if daily_mtm else 0,
             "cumulativeCarry": round(cumulative_carry) if cumulative_carry else 0,
             "totalPnL": round(total_pnl) if total_pnl else 0,
-        })
+        }
+        if bok_breakdown:
+            entry["bokBreakdown"] = bok_breakdown
+        chart_data.append(entry)
 
     last = chart_data[-1] if chart_data else {}
     summary = {

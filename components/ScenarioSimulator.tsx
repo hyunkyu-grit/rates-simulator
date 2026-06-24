@@ -544,6 +544,49 @@ export default function ScenarioSimulator({ positions, baseDate, fundingRate, sh
               </div>
             )}
 
+            {/* BOK 이벤트 MTM 구간별 분해 검증 테이블 */}
+            {(() => {
+              const bokEvents = chartData.filter((d: any) => d.bokBreakdown);
+              if (!bokEvents.length) return null;
+              const fmtBok = (v: number) => {
+                const eok = Math.round(v / 100000000 * 10) / 10;
+                return (eok >= 0 ? '+' : '') + eok.toFixed(1) + '억';
+              };
+              return (
+                <div className="bg-gray-900/70 border border-purple-800/40 rounded-lg p-3 mb-3">
+                  <div className="text-xs font-semibold text-purple-300 mb-2">금통위 이벤트 당일 MTM 영향 분해</div>
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="text-gray-400 border-b border-gray-700">
+                        <th className="text-left py-1">이벤트일</th>
+                        <th className="text-right py-1">3M 미만<br/><span className="text-gray-600 font-normal">BOK 직결</span></th>
+                        <th className="text-right py-1">3M~1Y<br/><span className="text-gray-600 font-normal">블렌드</span></th>
+                        <th className="text-right py-1">1Y 이상<br/><span className="text-gray-600 font-normal">장기경로</span></th>
+                        <th className="text-right py-1 font-bold">합계</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {bokEvents.map((d: any) => {
+                        const b = d.bokBreakdown;
+                        const total = b.shortDelta + b.blendDelta + b.longDelta;
+                        const clr = (v: number) => v < 0 ? 'text-red-400' : v > 0 ? 'text-blue-400' : 'text-gray-500';
+                        return (
+                          <tr key={d.day} className="border-t border-gray-700/50">
+                            <td className="py-1.5 text-gray-300">{fmtDateShort(d.day)}</td>
+                            <td className={`py-1.5 text-right ${clr(b.shortDelta)}`}>{fmtBok(b.shortDelta)}</td>
+                            <td className={`py-1.5 text-right ${clr(b.blendDelta)}`}>{fmtBok(b.blendDelta)}</td>
+                            <td className={`py-1.5 text-right ${clr(b.longDelta)}`}>{fmtBok(b.longDelta)}</td>
+                            <td className={`py-1.5 text-right font-bold ${total < 0 ? 'text-red-300' : 'text-emerald-300'}`}>{fmtBok(total)}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                  <p className="text-gray-600 text-xs mt-1.5">이벤트 당일 MTM 변화량 · 3M 미만은 기준금리 직결, 3M~1Y는 선형 블렌드, 1Y 이상은 장기 웨이포인트</p>
+                </div>
+              );
+            })()}
+
             <div ref={chartContainerRef} className="flex-1 w-full min-h-[300px]">
               {chartContainerWidth > 0 && <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={chartData} margin={{ top: 20, right: 30, left: 20, bottom: 5 }}>
