@@ -10,9 +10,8 @@ import type { ShockCurves } from '@/types/portfolio';
 interface Props {
   shockCurves?: ShockCurves;
   simDays: number;
-  shockType: 'step' | 'ramp';
-  shockMode: 'parallel' | 'matrix';
   baseShockBp: number;
+  waypoints?: { day: number; bp: number }[];
 }
 
 type ViewMode = 'termstructure' | 'timepath';
@@ -29,15 +28,9 @@ const TENOR_NODES = [
   { label: '10Y', years: 10 },
 ];
 
-const TIME_PATH_TENORS = [
-  { label: '3M', years: 0.25 },
-  { label: '3Y', years: 3 },
-  { label: '5Y', years: 5 },
-];
-
 const COLORS = ['#60A5FA', '#34D399', '#F87171', '#FBBF24', '#A78BFA', '#FB923C'];
 
-function lerp(years: number, curve: { t: number; val: number }[]): number {
+function lerpCurve(years: number, curve: { t: number; val: number }[]): number {
   if (!curve.length) return 0;
   const pts = [...curve].sort((a, b) => a.t - b.t);
   if (years <= pts[0].t) return pts[0].val;
@@ -51,11 +44,29 @@ function lerp(years: number, curve: { t: number; val: number }[]): number {
   return 0;
 }
 
+function lerpWaypoints(day: number, sorted: { day: number; bp: number }[]): number {
+  if (!sorted.length) return 0;
+  if (day <= sorted[0].day) return sorted[0].bp;
+  if (day >= sorted[sorted.length - 1].day) return sorted[sorted.length - 1].bp;
+  for (let i = 0; i < sorted.length - 1; i++) {
+    if (day >= sorted[i].day && day <= sorted[i + 1].day) {
+      const r = (day - sorted[i].day) / (sorted[i + 1].day - sorted[i].day);
+      return sorted[i].bp + r * (sorted[i + 1].bp - sorted[i].bp);
+    }
+  }
+  return 0;
+}
+
 export default function ScenarioPreviewChart({
-  shockCurves, simDays, shockType, shockMode, baseShockBp,
+  shockCurves, simDays, baseShockBp, waypoints,
 }: Props) {
-  const [viewMode, setViewMode] = useState<ViewMode>('termstructure');
+  const [viewMode, setViewMode] = useState<ViewMode>('timepath');
   const [selectedSector, setSelectedSector] = useState<string>('전체');
+
+  const hasShockCurves = !!(
+    shockCurves?.swapCurve?.length ||
+    Object.values(shockCurves?.bondCurves ?? {}).some(v => v.length > 0)
+  );
 
   const sectorOptions = useMemo(() => {
     const opts = ['전체'];
@@ -66,68 +77,53 @@ export default function ScenarioPreviewChart({
     return opts;
   }, [shockCurves]);
 
-  // 렌더링할 커브 목록
-  const activeCurves = useMemo<{ key: string; data: { t: number; val: number }[] }[]>(() => {
-    if (shockMode === 'parallel') {
-      return [{ key: 'Parallel Shift', data: TENOR_NODES.map(n => ({ t: n.years, val: baseShockBp })) }];
+  // 커브형: 테너별 최종 충격 bp
+  const activeCurves = useMemo(() => {
+    if (!hasShockCurves) {
+      return [{ key: '병행이동', data: TENOR_NODES.map(n => ({ t: n.years, val: baseShockBp })) }];
     }
-    if (!shockCurves) return [];
     const result: { key: string; data: { t: number; val: number }[] }[] = [];
-    if ((selectedSector === '전체' || selectedSector === 'IRS') && shockCurves.swapCurve?.length) {
+    if ((selectedSector === '전체' || selectedSector === 'IRS') && shockCurves?.swapCurve?.length) {
       result.push({ key: 'IRS', data: shockCurves.swapCurve });
     }
-    Object.entries(shockCurves.bondCurves ?? {}).forEach(([k, v]) => {
+    Object.entries(shockCurves?.bondCurves ?? {}).forEach(([k, v]) => {
       if (!v.length) return;
       if (selectedSector === '전체' || selectedSector === k) result.push({ key: k, data: v });
     });
     return result;
-  }, [shockCurves, shockMode, baseShockBp, selectedSector]);
+  }, [shockCurves, hasShockCurves, baseShockBp, selectedSector]);
 
-  const hasData = shockMode === 'parallel' || activeCurves.length > 0;
-
-  // 커브형 데이터: X=테너, Y=bp 변동
   const termData = useMemo(() => {
     return TENOR_NODES.map(({ label, years }) => {
       const row: Record<string, number | string> = { tenor: label, '현재 (0bp)': 0 };
-      activeCurves.forEach(({ key, data }) => { row[key] = lerp(years, data); });
+      activeCurves.forEach(({ key, data }) => { row[key] = lerpCurve(years, data); });
       return row;
     });
   }, [activeCurves]);
 
-  // 시계열형 데이터: X=일수, Y=bp 변동
+  // 시계열형: 웨이포인트 기반 국채 3Y 경로
   const timeData = useMemo(() => {
-    const days = new Set<number>([0]);
-    if (shockType === 'step') days.add(1);
-    const step = Math.max(1, Math.floor(simDays / 50));
-    for (let d = 2; d < simDays; d += step) days.add(d);
-    days.add(simDays);
+    const sorted = waypoints ? [...waypoints].sort((a, b) => a.day - b.day) : [];
+    const maxDay = sorted.length > 0 ? sorted[sorted.length - 1].day : simDays;
 
-    const refCurve =
-      shockCurves?.swapCurve?.length
-        ? shockCurves.swapCurve
-        : activeCurves[0]?.data ?? [];
+    const daySet = new Set<number>([0]);
+    const step = Math.max(1, Math.floor(maxDay / 60));
+    for (let d = step; d < maxDay; d += step) daySet.add(d);
+    daySet.add(maxDay);
+    sorted.forEach(w => daySet.add(w.day));
 
-    return [...days].sort((a, b) => a - b).map(day => {
-      const factor = shockType === 'step' ? (day === 0 ? 0 : 1) : day / simDays;
-      const row: Record<string, number | string> = { day: `D+${day}` };
-      TIME_PATH_TENORS.forEach(({ label, years }) => {
-        const target = shockMode === 'parallel' ? baseShockBp : lerp(years, refCurve);
-        row[label] = parseFloat((factor * target).toFixed(2));
-      });
-      return row;
+    return [...daySet].sort((a, b) => a - b).map(day => {
+      const bp = sorted.length >= 2
+        ? lerpWaypoints(day, sorted)
+        : (day / simDays) * baseShockBp;
+      return { day: `D+${day}`, '국채 3Y': parseFloat(bp.toFixed(2)) };
     });
-  }, [shockCurves, simDays, shockType, shockMode, baseShockBp, activeCurves]);
+  }, [waypoints, simDays, baseShockBp]);
 
-  // 빈 상태
-  if (!hasData) {
-    return (
-      <div className="flex-1 flex flex-col items-center justify-center border-2 border-dashed border-gray-600 rounded-xl">
-        <div className="text-5xl mb-4 opacity-20">📈</div>
-        <p className="text-gray-500 text-sm font-medium">시나리오를 설정하면</p>
-        <p className="text-gray-500 text-sm">여기에 예상 경로가 표시됩니다</p>
-      </div>
-    );
-  }
+  const waypointDaySet = useMemo(
+    () => new Set((waypoints ?? []).map(w => `D+${w.day}`)),
+    [waypoints],
+  );
 
   return (
     <div className="flex-1 bg-gray-900/40 rounded-xl border border-gray-700 p-4 flex flex-col min-h-0">
@@ -135,7 +131,7 @@ export default function ScenarioPreviewChart({
       <div className="flex items-center justify-between mb-3 flex-shrink-0">
         <h3 className="text-sm font-semibold text-blue-300">시나리오 커브 미리보기</h3>
         <div className="flex items-center gap-2">
-          {shockMode === 'matrix' && sectorOptions.length > 1 && (
+          {hasShockCurves && viewMode === 'termstructure' && sectorOptions.length > 1 && (
             <select
               value={selectedSector}
               onChange={e => setSelectedSector(e.target.value)}
@@ -176,7 +172,7 @@ export default function ScenarioPreviewChart({
               <ReferenceLine y={0} stroke="#6B7280" strokeWidth={1} />
               <Tooltip
                 contentStyle={{ backgroundColor: '#1F2937', borderColor: '#374151', fontSize: 11 }}
-                formatter={(v: any, name: string) => [`${Number(v).toFixed(1)}bp`, name]}
+                formatter={(v: any, name: any) => [`${Number(v).toFixed(1)}bp`, name]}
               />
               <Legend wrapperStyle={{ fontSize: 10, paddingTop: 6 }} />
               <Line
@@ -215,20 +211,30 @@ export default function ScenarioPreviewChart({
               <ReferenceLine y={0} stroke="#6B7280" strokeWidth={1} />
               <Tooltip
                 contentStyle={{ backgroundColor: '#1F2937', borderColor: '#374151', fontSize: 11 }}
-                formatter={(v: any, name: string) => [`${Number(v).toFixed(1)}bp`, name]}
+                formatter={(v: any, name: any) => [`${Number(v).toFixed(1)}bp`, name]}
               />
               <Legend wrapperStyle={{ fontSize: 10, paddingTop: 6 }} />
-              {TIME_PATH_TENORS.map(({ label }, i) => (
-                <Line
-                  key={label}
-                  dataKey={label}
-                  stroke={COLORS[i % COLORS.length]}
-                  dot={false}
-                  strokeWidth={2}
-                  type={shockType === 'step' ? 'stepAfter' : 'linear'}
-                  activeDot={{ r: 3 }}
-                />
-              ))}
+              <Line
+                dataKey="국채 3Y"
+                stroke="#60A5FA"
+                strokeWidth={2.5}
+                type="linear"
+                activeDot={{ r: 4 }}
+                dot={(props: any) => {
+                  if (!waypointDaySet.has(props.payload?.day)) return <g key={props.index} />;
+                  return (
+                    <circle
+                      key={props.index}
+                      cx={props.cx}
+                      cy={props.cy}
+                      r={4}
+                      fill="#60A5FA"
+                      stroke="#111827"
+                      strokeWidth={2}
+                    />
+                  );
+                }}
+              />
             </LineChart>
           </ResponsiveContainer>
         )}
@@ -237,8 +243,8 @@ export default function ScenarioPreviewChart({
       {/* 하단 설명 */}
       <p className="text-xs text-gray-500 mt-2 text-center flex-shrink-0">
         {viewMode === 'termstructure'
-          ? '점선: 현재 커브 · 실선: 시나리오 충격 후 예상 커브'
-          : `${shockType === 'step' ? 'Step — 즉시 전가' : 'Ramp — 선형 점진'} · IRS 주요 테너별 충격 경로`}
+          ? `점선: 현재 커브 · 실선: 충격 후 예상 커브 (최종 ${baseShockBp >= 0 ? '+' : ''}${baseShockBp}bp)`
+          : `● = 웨이포인트 · 국채 3Y 기준 경로 · D+${simDays} 최종 ${baseShockBp >= 0 ? '+' : ''}${baseShockBp}bp`}
       </p>
     </div>
   );

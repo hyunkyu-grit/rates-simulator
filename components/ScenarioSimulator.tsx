@@ -19,10 +19,12 @@ interface Props {
 }
 
 export default function ScenarioSimulator({ positions, baseDate, fundingRate, shockCurves, dailyShockCurves, fundingEvents: propFundingEvents, irsParRates = [], onMetricsUpdate }: Props) {
-  const [simDays, setSimDays] = useState<number>(90);
-  const [shockType, setShockType] = useState<'step' | 'ramp'>('step');
-  const [shockMode, setShockMode] = useState<'parallel' | 'matrix'>('parallel');
-  const [baseShockBp, setBaseShockBp] = useState<number>(50); // 기본 +50bp 충격 세팅
+  const [simDays, setSimDays] = useState<number>(180);
+  const [baseShockBp, setBaseShockBp] = useState<number>(30);
+  const [waypoints, setWaypoints] = useState<{ day: number; bp: number }[]>([
+    { day: 0, bp: 0 },
+    { day: 180, bp: 30 },
+  ]);
   const [isSimulated, setIsSimulated] = useState<boolean>(false);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -49,6 +51,24 @@ export default function ScenarioSimulator({ positions, baseDate, fundingRate, sh
     }
   }, [isSimulated]);
 
+  useEffect(() => {
+    setWaypoints(prev => {
+      const result: { day: number; bp: number }[] = [{ day: 0, bp: 0 }];
+      const numSteps = Math.floor(simDays / 30);
+      for (let i = 1; i < numSteps; i++) {
+        const day = i * 30;
+        const existing = prev.find(w => w.day === day);
+        result.push({ day, bp: existing?.bp ?? 0 });
+      }
+      result.push({ day: simDays, bp: baseShockBp });
+      return result;
+    });
+  }, [simDays, baseShockBp]);
+
+  const updateWaypoint = (day: number, bp: number) => {
+    setWaypoints(prev => prev.map(w => w.day === day ? { ...w, bp } : w));
+  };
+
   const runSimulation = async () => {
     if (!positions || positions.length === 0) return;
     setIsLoading(true);
@@ -61,8 +81,8 @@ export default function ScenarioSimulator({ positions, baseDate, fundingRate, sh
       fundingRate,
       fundingEvents: propFundingEvents ?? shockCurves?.fundingEvents ?? [],
       simDays,
-      shockType,
-      shockMode,
+      shockType: 'ramp' as const,
+      shockMode: 'parallel' as const,
       baseShockBp,
       baseDate,
       irsCurves: irsParRates,
@@ -103,85 +123,84 @@ export default function ScenarioSimulator({ positions, baseDate, fundingRate, sh
       
       {/* 좌측: 시나리오 설정 패널 (1칸) */}
       <div className="bg-gray-800 rounded-lg p-5 shadow-xl col-span-1 flex flex-col">
-        <div className="mb-6">
+        <div className="mb-5">
           <h2 className="text-xl font-bold text-blue-300">시나리오 조건 설정</h2>
-          <p className="text-xs text-gray-400 mt-1">포트폴리오 Total Return 분석</p>
+          <p className="text-xs text-gray-400 mt-1">국채 3Y 기준 금리 경로 설계</p>
         </div>
-        
-        <div className="space-y-6 flex-1">
+
+        <div className="space-y-5 flex-1 overflow-y-auto pr-1">
+          {/* 1. 시뮬레이션 기간 */}
           <div>
-            <label className="block text-sm font-medium text-gray-300 mb-2">시뮬레이션 기간 (일)</label>
-            <input 
-              type="range" min="10" max="365" step="1" 
-              value={simDays} onChange={(e) => setSimDays(Number(e.target.value))} 
+            <label className="block text-sm font-medium text-gray-300 mb-2">시뮬레이션 기간</label>
+            <input
+              type="range" min="30" max="365" step="1"
+              value={simDays} onChange={(e) => setSimDays(Number(e.target.value))}
               className="w-full accent-blue-500"
             />
             <div className="text-right text-blue-400 font-bold mt-1">{simDays} Days</div>
           </div>
 
+          {/* 2. Base 충격 */}
           <div>
-            <label className="block text-sm font-medium text-gray-300 mb-2">금리 충격 방식</label>
-            <div className="flex bg-gray-900 rounded-lg p-1">
-              <button 
-                onClick={() => setShockType('step')} 
-                className={`flex-1 py-2 text-sm font-bold rounded-md transition ${shockType === 'step' ? 'bg-red-600 text-white' : 'text-gray-500 hover:text-gray-300'}`}
-              >
-                Step (즉시 반영)
-              </button>
-              <button 
-                onClick={() => setShockType('ramp')} 
-                className={`flex-1 py-2 text-sm font-bold rounded-md transition ${shockType === 'ramp' ? 'bg-orange-500 text-white' : 'text-gray-500 hover:text-gray-300'}`}
-              >
-                Ramp (점진 반영)
-              </button>
+            <div className="flex justify-between items-center mb-2">
+              <label className="text-sm font-medium text-gray-300">국채 3Y 목표 변동</label>
+              <span className="text-xs text-gray-500 bg-gray-700 px-2 py-0.5 rounded">D+{simDays} 고정</span>
             </div>
-            <p className="text-xs text-gray-500 mt-2">
-              {shockType === 'step' ? '* 1일차에 목표 충격이 100% 반영됩니다.' : '* 설정 기간 동안 매일 점진적으로 금리가 변동합니다.'}
-            </p>
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-300 mb-2">충격 적용 방식</label>
-            <div className="flex bg-gray-900 rounded-lg p-1">
-              <button 
-                onClick={() => setShockMode('parallel')} 
-                className={`flex-1 py-2 text-sm font-bold rounded-md transition ${shockMode === 'parallel' ? 'bg-blue-600 text-white' : 'text-gray-500 hover:text-gray-300'}`}
-              >
-                단순 병행 이동 (Parallel)
-              </button>
-              <button 
-                onClick={() => setShockMode('matrix')} 
-                className={`flex-1 py-2 text-sm font-bold rounded-md transition ${shockMode === 'matrix' ? 'bg-purple-600 text-white' : 'text-gray-500 hover:text-gray-300'}`}
-              >
-                업로드된 커브 적용 (Matrix)
-              </button>
-            </div>
-            <p className="text-xs text-gray-500 mt-2">
-              {shockMode === 'parallel' ? '* 모든 채권에 동일한 병행 충격을 적용합니다.' : '* 업로드된 섹터/테너별 커브를 적용합니다.'}
-            </p>
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-300 mb-2">
-              {shockMode === 'parallel' ? '목표 금리 변동 (Parallel Shift, bp)' : '기본 금리 변동 (Matrix 모드에서는 커브 우선 적용)'}
-            </label>
-            <div className="flex items-center space-x-3">
-              <input 
-                type="number" value={baseShockBp} 
-                onChange={(e) => setBaseShockBp(Number(e.target.value))} 
-                disabled={shockMode === 'matrix'}
-                className={`flex-1 border border-gray-600 rounded-lg p-2 text-right text-lg font-bold ${
-                  shockMode === 'matrix' 
-                    ? 'bg-gray-600 text-gray-400 cursor-not-allowed' 
-                    : 'bg-gray-700 text-white'
-                }`} 
+            <div className="flex items-center gap-2">
+              <input
+                type="number" value={baseShockBp}
+                onChange={(e) => setBaseShockBp(Number(e.target.value))}
+                className="flex-1 bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-right text-lg font-bold text-white focus:outline-none focus:border-blue-500"
               />
-              <span className="text-gray-400 font-medium">bp</span>
+              <span className="text-gray-400 font-medium text-sm">bp</span>
+            </div>
+          </div>
+
+          {/* 3. 경로 설정 */}
+          <div>
+            <label className="block text-sm font-medium text-gray-300 mb-3">경로 설정 (국채 3Y)</label>
+            <div className="space-y-2.5">
+              {/* D+0 고정 */}
+              <div className="flex items-center gap-2 opacity-40 select-none">
+                <span className="text-xs text-gray-400 w-12 flex-shrink-0 font-mono">D+0</span>
+                <div className="flex-1 h-1 bg-gray-700 rounded" />
+                <span className="text-xs text-gray-400 w-14 text-right flex-shrink-0 font-mono">0 bp</span>
+              </div>
+
+              {/* 중간 웨이포인트 */}
+              {waypoints.slice(1, -1).map((wp) => {
+                const absMax = Math.max(Math.abs(baseShockBp) + 50, 100);
+                const bpColor = wp.bp > 0 ? 'text-red-400' : wp.bp < 0 ? 'text-blue-400' : 'text-gray-400';
+                return (
+                  <div key={wp.day} className="flex items-center gap-2">
+                    <span className="text-xs text-gray-400 w-12 flex-shrink-0 font-mono">D+{wp.day}</span>
+                    <input
+                      type="range"
+                      min={-absMax} max={absMax} step={1}
+                      value={wp.bp}
+                      onChange={(e) => updateWaypoint(wp.day, Number(e.target.value))}
+                      className="flex-1 accent-blue-500 cursor-pointer"
+                    />
+                    <span className={`text-xs font-bold w-14 text-right flex-shrink-0 font-mono ${bpColor}`}>
+                      {wp.bp >= 0 ? '+' : ''}{wp.bp} bp
+                    </span>
+                  </div>
+                );
+              })}
+
+              {/* D+simDays 고정 */}
+              <div className="flex items-center gap-2 opacity-40 select-none">
+                <span className="text-xs text-gray-400 w-12 flex-shrink-0 font-mono">D+{simDays}</span>
+                <div className="flex-1 h-1 bg-gray-700 rounded" />
+                <span className={`text-xs font-bold w-14 text-right flex-shrink-0 font-mono ${baseShockBp > 0 ? 'text-red-400' : baseShockBp < 0 ? 'text-blue-400' : 'text-gray-400'}`}>
+                  {baseShockBp >= 0 ? '+' : ''}{baseShockBp} bp
+                </span>
+              </div>
             </div>
           </div>
         </div>
-        
-        <button 
+
+        <button
           onClick={runSimulation}
           disabled={isLoading}
           className={`w-full font-extrabold text-lg py-4 rounded-xl shadow-lg transition-transform transform mt-4 ${
@@ -216,9 +235,8 @@ export default function ScenarioSimulator({ positions, baseDate, fundingRate, sh
           <ScenarioPreviewChart
             shockCurves={shockCurves}
             simDays={simDays}
-            shockType={shockType}
-            shockMode={shockMode}
             baseShockBp={baseShockBp}
+            waypoints={waypoints}
           />
         ) : (
           <>
