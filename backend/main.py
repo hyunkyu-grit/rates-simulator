@@ -98,6 +98,7 @@ class SimulateRequest(BaseModel):
     baseShockBp: float = 50.0
     baseDate: str = "2026-01-01"
     irsCurves: list[dict] = []          # [{t: float, rate: float}, ...] IRS Par Rate (decimal)
+    customPath: list[dict] = []         # [{day: int, bp: float}, ...] 웨이포인트 기반 커스텀 경로
 
 
 # ── 퀀트 엔진 헬퍼 함수 ───────────────────────────────────────────────────────
@@ -306,6 +307,7 @@ def build_chart_data(
     base_date_str: str,
     irs_curves: list[dict] | None = None,
     irs_shock_curve_prebuilt: list[tuple[float, float]] | None = None,
+    custom_path: list[dict] | None = None,
 ) -> tuple[list[dict], dict]:
     try:
         base_date = date.fromisoformat(base_date_str)
@@ -388,9 +390,30 @@ def build_chart_data(
             _tb.print_exc()
             raise ValueError(f"FM Engine Crash ({getattr(p, 'id', '')}): {e}") from e
 
+    # 커스텀 경로 사전 처리 (웨이포인트 기반 factor 보간)
+    _sorted_cp = sorted(
+        [{"day": int(p.get("day", 0)), "bp": float(p.get("bp", 0))} for p in (custom_path or [])],
+        key=lambda x: x["day"],
+    ) if custom_path else []
+
+    def _factor(t: int) -> float:
+        if _sorted_cp and base_shock_bp != 0:
+            if t <= _sorted_cp[0]["day"]:
+                return _sorted_cp[0]["bp"] / base_shock_bp
+            if t >= _sorted_cp[-1]["day"]:
+                return _sorted_cp[-1]["bp"] / base_shock_bp
+            for i in range(len(_sorted_cp) - 1):
+                lo, hi = _sorted_cp[i], _sorted_cp[i + 1]
+                if lo["day"] <= t <= hi["day"]:
+                    if hi["day"] == lo["day"]:
+                        return lo["bp"] / base_shock_bp
+                    r = (t - lo["day"]) / (hi["day"] - lo["day"])
+                    return (lo["bp"] + r * (hi["bp"] - lo["bp"])) / base_shock_bp
+        return (t / sim_days) if shock_type == "ramp" else (1.0 if t > 0 else 0.0)
+
     for t in range(sim_days + 1):
         current_date = base_date + timedelta(days=t)
-        multiplier = (t / sim_days) if shock_type == "ramp" else (1.0 if t > 0 else 0.0)
+        multiplier = _factor(t)
         active_rate = calc_dynamic_funding_rate(funding_rate, funding_events, current_date)
 
         # 채권: 기존 선형 MTM / IRS: FM 결과 직접 사용 (내부에서 이미 ramp/step 적용)
@@ -703,6 +726,7 @@ def simulate(req: SimulateRequest):
         base_date_str=req.baseDate,
         irs_curves=req.irsCurves,
         irs_shock_curve_prebuilt=irs_shock_curve,
+        custom_path=req.customPath or None,
     )
     pvbp_sensitivity = build_pvbp_sensitivity(positions)
     # bookDailyPnL: 당일 실제 금리변동만 반영. dailyShockCurves 없으면 shockCurves로 fallback

@@ -1,12 +1,48 @@
 "use client";
 
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import type { Position, FundingEvent, ShockCurves, PVBPSensitivity, BookDailyPnL } from '@/types/portfolio';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine
 } from 'recharts';
 import ScenarioPreviewChart from './ScenarioPreviewChart';
- 
+
+type CreditSpreads = { '특은채': number; '은행채': number; '카드채': number; '회사채': number };
+
+function generateShockCurves(
+  baseShockBp: number,
+  spread1y: number,
+  spread10y: number,
+  spread30y: number,
+  credit: CreditSpreads,
+  irsSpread: number,
+): ShockCurves {
+  // 테너별 국채 spread (vs 3Y 앵커): 1Y↔3Y, 3Y↔10Y, 10Y↔30Y 구간 선형 보간
+  const nodes = [
+    { t: 1 / 365, s: spread1y },
+    { t: 0.25,    s: spread1y },
+    { t: 0.5,     s: spread1y },
+    { t: 1,       s: spread1y },
+    { t: 2,       s: spread1y * (3 - 2) / (3 - 1) },
+    { t: 3,       s: 0 },
+    { t: 5,       s: spread10y * (5 - 3) / (10 - 3) },
+    { t: 7,       s: spread10y * (7 - 3) / (10 - 3) },
+    { t: 10,      s: spread10y },
+    { t: 20,      s: spread10y + (spread30y - spread10y) * 0.5 },
+    { t: 30,      s: spread30y },
+  ];
+  const ktb = nodes.map(({ t, s }) => ({ t, val: baseShockBp + s }));
+  const bondCurves: ShockCurves['bondCurves'] = {
+    '국채': ktb,
+    '특은채': ktb.map(p => ({ t: p.t, val: p.val + credit['특은채'] })),
+    '은행채': ktb.map(p => ({ t: p.t, val: p.val + credit['은행채'] })),
+    '카드채': ktb.map(p => ({ t: p.t, val: p.val + credit['카드채'] })),
+    '회사채': ktb.map(p => ({ t: p.t, val: p.val + credit['회사채'] })),
+  };
+  const swapCurve = ktb.map(p => ({ t: p.t, val: p.val + irsSpread }));
+  return { bondCurves, swapCurve };
+}
+
 interface Props {
   positions: Position[];
   baseDate: string;
@@ -25,6 +61,12 @@ export default function ScenarioSimulator({ positions, baseDate, fundingRate, sh
     { day: 0, bp: 0 },
     { day: 180, bp: 30 },
   ]);
+  const [spread1y, setSpread1y]   = useState<number>(0);
+  const [spread10y, setSpread10y] = useState<number>(0);
+  const [spread30y, setSpread30y] = useState<number>(0);
+  const [creditSpreads, setCreditSpreads] = useState<CreditSpreads>({ '특은채': 0, '은행채': 0, '카드채': 0, '회사채': 0 });
+  const [irsSpread, setIrsSpread] = useState<number>(0);
+  const [spreadsOpen, setSpreadsOpen] = useState<boolean>(false);
   const [isSimulated, setIsSimulated] = useState<boolean>(false);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -69,6 +111,11 @@ export default function ScenarioSimulator({ positions, baseDate, fundingRate, sh
     setWaypoints(prev => prev.map(w => w.day === day ? { ...w, bp } : w));
   };
 
+  const generatedShockCurves = useMemo(
+    () => generateShockCurves(baseShockBp, spread1y, spread10y, spread30y, creditSpreads, irsSpread),
+    [baseShockBp, spread1y, spread10y, spread30y, creditSpreads, irsSpread],
+  );
+
   const runSimulation = async () => {
     if (!positions || positions.length === 0) return;
     setIsLoading(true);
@@ -76,16 +123,17 @@ export default function ScenarioSimulator({ positions, baseDate, fundingRate, sh
 
     const payload = {
       positions,
-      shockCurves: shockCurves ?? { bondCurves: {}, swapCurve: [], fundingEvents: [] },
+      shockCurves: generatedShockCurves,
       dailyShockCurves: dailyShockCurves ?? { bondCurves: {}, swapCurve: [], fundingEvents: [] },
       fundingRate,
-      fundingEvents: propFundingEvents ?? shockCurves?.fundingEvents ?? [],
+      fundingEvents: propFundingEvents ?? [],
       simDays,
       shockType: 'ramp' as const,
-      shockMode: 'parallel' as const,
+      shockMode: 'matrix' as const,
       baseShockBp,
       baseDate,
       irsCurves: irsParRates,
+      customPath: waypoints,
     };
 
     try {
@@ -198,6 +246,75 @@ export default function ScenarioSimulator({ positions, baseDate, fundingRate, sh
               </div>
             </div>
           </div>
+
+          {/* 4. 커브 스프레드 설정 */}
+          <div className="border-t border-gray-700 pt-4">
+            <button
+              onClick={() => setSpreadsOpen(!spreadsOpen)}
+              className="flex items-center justify-between w-full text-sm font-medium text-gray-300 hover:text-white transition"
+            >
+              <span>커브 스프레드 설정</span>
+              <span className="text-gray-500 text-xs ml-2">{spreadsOpen ? '▲' : '▼'}</span>
+            </button>
+
+            {spreadsOpen && (
+              <div className="mt-3 space-y-4">
+                {/* 국고채 테너 스프레드 */}
+                <div>
+                  <p className="text-xs text-gray-500 mb-2">국고채 테너 스프레드 (vs 국채 3Y)</p>
+                  <div className="space-y-1.5">
+                    {([
+                      { label: '1Y 기준', value: spread1y, set: setSpread1y },
+                      { label: '10Y 기준', value: spread10y, set: setSpread10y },
+                      { label: '30Y 기준', value: spread30y, set: setSpread30y },
+                    ] as const).map(({ label, value, set }) => (
+                      <div key={label} className="flex items-center gap-2">
+                        <span className="text-xs text-gray-400 w-14 flex-shrink-0">{label}</span>
+                        <input
+                          type="number"
+                          value={value}
+                          onChange={(e) => (set as (v: number) => void)(Number(e.target.value))}
+                          className="flex-1 bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-right text-white focus:outline-none focus:border-blue-500"
+                        />
+                        <span className="text-xs text-gray-500 w-5 flex-shrink-0">bp</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* 크레딧 스프레드 */}
+                <div>
+                  <p className="text-xs text-gray-500 mb-2">크레딧 스프레드 (국채 대비 추가)</p>
+                  <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
+                    {(Object.keys(creditSpreads) as (keyof CreditSpreads)[]).map((sector) => (
+                      <div key={sector} className="flex items-center gap-1.5">
+                        <span className="text-xs text-gray-400 w-10 flex-shrink-0">{sector}</span>
+                        <input
+                          type="number"
+                          value={creditSpreads[sector]}
+                          onChange={(e) => setCreditSpreads(prev => ({ ...prev, [sector]: Number(e.target.value) }))}
+                          className="flex-1 min-w-0 bg-gray-900 border border-gray-700 rounded px-1.5 py-1 text-xs text-right text-white focus:outline-none focus:border-blue-500"
+                        />
+                        <span className="text-xs text-gray-500">bp</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* IRS 스프레드 */}
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-gray-400 w-14 flex-shrink-0">IRS 스프레드</span>
+                  <input
+                    type="number"
+                    value={irsSpread}
+                    onChange={(e) => setIrsSpread(Number(e.target.value))}
+                    className="flex-1 bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-right text-white focus:outline-none focus:border-blue-500"
+                  />
+                  <span className="text-xs text-gray-500 w-5 flex-shrink-0">bp</span>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
 
         <button
@@ -233,7 +350,7 @@ export default function ScenarioSimulator({ positions, baseDate, fundingRate, sh
           </div>
         ) : !isSimulated ? (
           <ScenarioPreviewChart
-            shockCurves={shockCurves}
+            shockCurves={generatedShockCurves}
             simDays={simDays}
             baseShockBp={baseShockBp}
             waypoints={waypoints}
