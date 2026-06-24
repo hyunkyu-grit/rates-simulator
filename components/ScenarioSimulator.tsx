@@ -144,10 +144,10 @@ export default function ScenarioSimulator({ positions, baseDate, fundingRate, sh
     return pts;
   }, [shortEndEvents, baseDate, simDays]);
 
-  // BOK 이벤트가 있으면 최종 누적 변동, 없으면 (baseShockBp + spread1y) = 1Y 수준 폴백
+  // BOK 이벤트가 시뮬레이션 기간 내에 있으면 최종 누적 변동, 없으면 0 (기준금리 불변)
   const shortEndBp = fundingSteps.length > 0
     ? fundingSteps[fundingSteps.length - 1].cumBp
-    : toNum(baseShockBp) + toNum(spread1y);
+    : 0;
 
   const generatedShockCurves = useMemo(
     () => generateShockCurves(
