@@ -207,12 +207,21 @@ def calculate_daily_mtm(
 
             current_pvbp = initial_pvbp * (current_remaining / initial_remaining)
 
-            # 잔존 1년 미만 단기채: BOK 계단 함수 적용, 그 외: 웨이포인트 경로 적용
-            eff_mult = (
-                short_multiplier
-                if short_multiplier is not None and current_remaining / 365.0 < 1.0
-                else multiplier
-            )
+            # 잔존기간별 팩터 결정:
+            #   < 3M (0.25Y) : BOK 계단 함수 (기준금리 직결)
+            #   3M ~ 1Y      : BOK ↔ 웨이포인트 선형 보간
+            #   >= 1Y        : 웨이포인트 경로
+            r_years = current_remaining / 365.0
+            if short_multiplier is not None:
+                if r_years < 0.25:
+                    eff_mult = short_multiplier
+                elif r_years < 1.0:
+                    blend = (r_years - 0.25) / (1.0 - 0.25)   # 0 at 3M → 1 at 1Y
+                    eff_mult = short_multiplier * (1.0 - blend) + multiplier * blend
+                else:
+                    eff_mult = multiplier
+            else:
+                eff_mult = multiplier
 
             if shock_mode == "parallel":
                 shock_bp = (base_shock_bp or 0.0) * eff_mult
