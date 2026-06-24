@@ -64,9 +64,18 @@ function lookupFunding(day: number, steps: { day: number; cumBp: number }[]): nu
   let cum = 0;
   for (const s of steps) {
     if (s.day <= day) cum = s.cumBp;
-    else break;
+    else break;  // steps must be sorted ascending
   }
   return cum;
+}
+
+function isStepDay(label: string, steps: { day: number; cumBp: number }[]): boolean {
+  const dayNum = parseInt(label.replace('D+', ''), 10);
+  // 실제 cumBp가 바뀌는 지점 (이전 값과 다른 첫 번째 occurrence)
+  for (let i = 1; i < steps.length; i++) {
+    if (steps[i].day === dayNum && steps[i].cumBp !== steps[i - 1].cumBp) return true;
+  }
+  return false;
 }
 
 export default function ScenarioPreviewChart({
@@ -226,6 +235,8 @@ export default function ScenarioPreviewChart({
                 tick={{ fill: '#9CA3AF', fontSize: 10 }}
                 tickFormatter={v => `${v}bp`}
                 width={42}
+                domain={['auto', 'auto']}
+                allowDataOverflow={false}
               />
               <ReferenceLine y={0} stroke="#6B7280" strokeWidth={1} />
               <Tooltip
@@ -258,11 +269,24 @@ export default function ScenarioPreviewChart({
                 <Line
                   dataKey="기준금리"
                   stroke="#A78BFA"
-                  strokeWidth={2}
+                  strokeWidth={2.5}
                   strokeDasharray="6 3"
                   type="linear"
-                  dot={false}
-                  activeDot={{ r: 3 }}
+                  activeDot={{ r: 4, fill: '#A78BFA' }}
+                  dot={(props: any) => {
+                    if (!isStepDay(props.payload?.day ?? '', fundingSteps!)) return <g key={props.index} />;
+                    return (
+                      <circle
+                        key={props.index}
+                        cx={props.cx}
+                        cy={props.cy}
+                        r={5}
+                        fill="#A78BFA"
+                        stroke="#111827"
+                        strokeWidth={2}
+                      />
+                    );
+                  }}
                 />
               )}
             </LineChart>

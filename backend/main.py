@@ -188,6 +188,7 @@ def calculate_daily_mtm(
     multiplier: float,
     t: int,
     current_date: date | None = None,
+    short_multiplier: float | None = None,  # 잔존 1Y 미만 채권에 적용 (BOK 계단 함수)
 ) -> float:
     total = 0.0
     for p in positions:
@@ -206,8 +207,15 @@ def calculate_daily_mtm(
 
             current_pvbp = initial_pvbp * (current_remaining / initial_remaining)
 
+            # 잔존 1년 미만 단기채: BOK 계단 함수 적용, 그 외: 웨이포인트 경로 적용
+            eff_mult = (
+                short_multiplier
+                if short_multiplier is not None and current_remaining / 365.0 < 1.0
+                else multiplier
+            )
+
             if shock_mode == "parallel":
-                shock_bp = (base_shock_bp or 0.0) * multiplier
+                shock_bp = (base_shock_bp or 0.0) * eff_mult
             else:
                 if not shock_curves:
                     shock_bp = 0.0
@@ -218,7 +226,7 @@ def calculate_daily_mtm(
                         or shock_curves.bondCurves.get("국채")
                         or []
                     )
-                    shock_bp = interpolate_curve_shift(current_remaining / 365.0, target) * multiplier
+                    shock_bp = interpolate_curve_shift(current_remaining / 365.0, target) * eff_mult
 
             total += current_pvbp * (-shock_bp)
         else:
@@ -411,13 +419,39 @@ def build_chart_data(
                     return (lo["bp"] + r * (hi["bp"] - lo["bp"])) / base_shock_bp
         return (t / sim_days) if shock_type == "ramp" else (1.0 if t > 0 else 0.0)
 
+    # 단기 이벤트 계단 함수: funding_events 날짜 → D+N 변환
+    try:
+        _short_evts = sorted(
+            [
+                {
+                    "day": (date.fromisoformat(ev["date"]) - base_date).days,
+                    "bp":  float(ev.get("shiftBp", 0)),
+                }
+                for ev in (funding_events or [])
+                if ev.get("date") and 0 <= (date.fromisoformat(ev["date"]) - base_date).days <= sim_days
+            ],
+            key=lambda x: x["day"],
+        )
+        _cum_short = sum(e["bp"] for e in _short_evts)
+    except Exception:
+        _short_evts = []
+        _cum_short = 0.0
+
+    def _short_factor(t: int) -> float:
+        """잔존 1Y 미만 채권용: BOK 이벤트 누적 변동 기준 정규화 계단 함수."""
+        if not _short_evts or _cum_short == 0:
+            return _factor(t)
+        cum_t = sum(e["bp"] for e in _short_evts if e["day"] <= t)
+        return cum_t / _cum_short
+
     for t in range(sim_days + 1):
         current_date = base_date + timedelta(days=t)
         multiplier = _factor(t)
+        short_mult  = _short_factor(t)
         active_rate = calc_dynamic_funding_rate(funding_rate, funding_events, current_date)
 
         # 채권: 기존 선형 MTM / IRS: FM 결과 직접 사용 (내부에서 이미 ramp/step 적용)
-        bond_mtm  = calculate_daily_mtm(bond_positions, shock_mode, shock_type, base_shock_bp, shock_curves, multiplier, t, current_date)
+        bond_mtm  = calculate_daily_mtm(bond_positions, shock_mode, shock_type, base_shock_bp, shock_curves, multiplier, t, current_date, short_mult)
         daily_mtm = bond_mtm + float(irs_fm_mtm[t])
         # 일별 캐리: 채권만 calculate_daily_carry, IRS는 FM 엔진 리턴 값 사용 (리픽싱 비선형 반영)
         bond_carry = calculate_daily_carry(bond_positions, shock_mode, shock_type, base_shock_bp, shock_curves, active_rate, multiplier, t, current_date)

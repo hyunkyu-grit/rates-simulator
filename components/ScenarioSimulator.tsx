@@ -18,12 +18,15 @@ function generateShockCurves(
   spread30y: number,
   credit: CreditSpreads,
   irsSpread: number,
+  shortEndBp: number,  // 1D/3M 최종 충격 (BOK 누적 변동; 이벤트 없으면 1Y 수준으로 폴백)
 ): ShockCurves {
-  // 테너별 국채 spread (vs 3Y 앵커): 1Y↔3Y, 3Y↔10Y, 10Y↔30Y 구간 선형 보간
+  // 1D/3M: BOK 이벤트 기반 최종 충격, 6M: 3M↔1Y 선형 보간, 1Y 이상: 기존 spread 체계
+  const shortSpread = shortEndBp - baseShockBp;  // baseShockBp 기준 상대 spread
+  const sixMSpread  = shortSpread + (spread1y - shortSpread) * (0.5 - 0.25) / (1.0 - 0.25);
   const nodes = [
-    { t: 1 / 365, s: spread1y },
-    { t: 0.25,    s: spread1y },
-    { t: 0.5,     s: spread1y },
+    { t: 1 / 365, s: shortSpread },
+    { t: 0.25,    s: shortSpread },
+    { t: 0.5,     s: sixMSpread  },
     { t: 1,       s: spread1y },
     { t: 2,       s: spread1y * (3 - 2) / (3 - 1) },
     { t: 3,       s: 0 },
@@ -141,6 +144,11 @@ export default function ScenarioSimulator({ positions, baseDate, fundingRate, sh
     return pts;
   }, [shortEndEvents, baseDate, simDays]);
 
+  // BOK 이벤트가 있으면 최종 누적 변동, 없으면 (baseShockBp + spread1y) = 1Y 수준 폴백
+  const shortEndBp = fundingSteps.length > 0
+    ? fundingSteps[fundingSteps.length - 1].cumBp
+    : toNum(baseShockBp) + toNum(spread1y);
+
   const generatedShockCurves = useMemo(
     () => generateShockCurves(
       toNum(baseShockBp),
@@ -149,8 +157,9 @@ export default function ScenarioSimulator({ positions, baseDate, fundingRate, sh
         Object.entries(creditSpreads).map(([k, v]) => [k, toNum(v)])
       ) as CreditSpreads,
       toNum(irsSpread),
+      shortEndBp,
     ),
-    [baseShockBp, spread1y, spread10y, spread30y, creditSpreads, irsSpread],
+    [baseShockBp, spread1y, spread10y, spread30y, creditSpreads, irsSpread, shortEndBp],
   );
 
   const runSimulation = async () => {
