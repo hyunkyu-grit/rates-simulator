@@ -235,7 +235,13 @@ def calculate_daily_mtm(
                         or shock_curves.bondCurves.get("국채")
                         or []
                     )
-                    shock_bp = interpolate_curve_shift(current_remaining / 365.0, target) * eff_mult
+                    # BOK 이벤트는 기준금리(KTB) 성분에만 적용; 크레딧 스프레드는 장기 경로를 따름
+                    # → 특은채 등에 크레딧 스프레드가 포함된 경우 eff_mult가 스프레드까지 스케일하는 오류 방지
+                    ktb_curve  = shock_curves.bondCurves.get("국채") or []
+                    ktb_at_r   = interpolate_curve_shift(r_years, ktb_curve)
+                    total_at_r = interpolate_curve_shift(r_years, target)
+                    credit_addon = total_at_r - ktb_at_r   # 크레딧 스프레드 성분
+                    shock_bp = ktb_at_r * eff_mult + credit_addon * multiplier
 
             total += current_pvbp * (-shock_bp)
         else:
