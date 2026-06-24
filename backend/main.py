@@ -476,13 +476,19 @@ def build_chart_data(
             prev_mult_bd = _factor(t - 1)
             prev_sf_bd   = _short_factor(t - 1)
             prev_date_bd = current_date - timedelta(days=1)
-            bd: dict[str, int] = {}
+            bd: dict[str, object] = {}
             for zone_name in ("short", "blend", "long"):
                 z_cur  = [p for p in bond_positions if p.bondType != "swap" and _get_bond_zone(p, t)     == zone_name]
                 z_prev = [p for p in bond_positions if p.bondType != "swap" and _get_bond_zone(p, t - 1) == zone_name]
                 cur_m  = calculate_daily_mtm(z_cur,  shock_mode, shock_type, base_shock_bp, shock_curves, multiplier,    t,     current_date, short_mult)  if z_cur  else 0.0
                 prev_m = calculate_daily_mtm(z_prev, shock_mode, shock_type, base_shock_bp, shock_curves, prev_mult_bd, t - 1, prev_date_bd, prev_sf_bd) if z_prev else 0.0
+                # 구간 현재 PVBP 합산 (에이징 반영) — 암묵적 bp 역산용
+                zone_pvbp = sum(
+                    (p.pvbp or 0.0) * max(float(p.remainingDays or 1) - t, 0.0) / max(float(p.remainingDays or 1), 1.0)
+                    for p in z_cur
+                )
                 bd[f"{zone_name}Delta"] = round(cur_m - prev_m)
+                bd[f"{zone_name}Pvbp"]  = round(zone_pvbp)
             bok_breakdown = bd
         # 일별 캐리: 채권만 calculate_daily_carry, IRS는 FM 엔진 리턴 값 사용 (리픽싱 비선형 반영)
         bond_carry = calculate_daily_carry(bond_positions, shock_mode, shock_type, base_shock_bp, shock_curves, active_rate, multiplier, t, current_date)

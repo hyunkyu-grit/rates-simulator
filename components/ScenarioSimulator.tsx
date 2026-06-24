@@ -570,19 +570,33 @@ export default function ScenarioSimulator({ positions, baseDate, fundingRate, sh
                         const b = d.bokBreakdown;
                         const total = b.shortDelta + b.blendDelta + b.longDelta;
                         const clr = (v: number) => v < 0 ? 'text-red-400' : v > 0 ? 'text-blue-400' : 'text-gray-500';
+                        const impliedBp = (delta: number, pvbp: number) =>
+                          pvbp > 0 ? Math.round(-delta / pvbp * 10) / 10 : null;
+                        const shortBp = impliedBp(b.shortDelta, b.shortPvbp);
+                        const blendBp = impliedBp(b.blendDelta, b.blendPvbp);
+                        const longBp  = impliedBp(b.longDelta,  b.longPvbp);
                         return (
                           <tr key={d.day} className="border-t border-gray-700/50">
                             <td className="py-1.5 text-gray-300">{fmtDateShort(d.day)}</td>
-                            <td className={`py-1.5 text-right ${clr(b.shortDelta)}`}>{fmtBok(b.shortDelta)}</td>
-                            <td className={`py-1.5 text-right ${clr(b.blendDelta)}`}>{fmtBok(b.blendDelta)}</td>
-                            <td className={`py-1.5 text-right ${clr(b.longDelta)}`}>{fmtBok(b.longDelta)}</td>
+                            <td className={`py-1.5 text-right ${clr(b.shortDelta)}`}>
+                              {fmtBok(b.shortDelta)}
+                              {shortBp !== null && <span className="text-gray-500 ml-1">({shortBp}bp)</span>}
+                            </td>
+                            <td className={`py-1.5 text-right ${clr(b.blendDelta)}`}>
+                              {fmtBok(b.blendDelta)}
+                              {blendBp !== null && <span className="text-gray-500 ml-1">({blendBp}bp)</span>}
+                            </td>
+                            <td className={`py-1.5 text-right ${clr(b.longDelta)}`}>
+                              {fmtBok(b.longDelta)}
+                              {longBp !== null && <span className="text-gray-500 ml-1">({longBp}bp)</span>}
+                            </td>
                             <td className={`py-1.5 text-right font-bold ${total < 0 ? 'text-red-300' : 'text-emerald-300'}`}>{fmtBok(total)}</td>
                           </tr>
                         );
                       })}
                     </tbody>
                   </table>
-                  <p className="text-gray-600 text-xs mt-1.5">이벤트 당일 MTM 변화량 · 3M 미만은 기준금리 직결, 3M~1Y는 선형 블렌드, 1Y 이상은 장기 웨이포인트</p>
+                  <p className="text-gray-600 text-xs mt-1.5">괄호 = 구간 PVBP 대비 역산 금리변동 · 3M 미만은 BOK 직결, 3M~1Y는 선형 블렌드, 1Y 이상은 장기 웨이포인트</p>
                 </div>
               );
             })()}
