@@ -26,6 +26,8 @@ const TENOR_NODES = [
   { label: '5Y', years: 5 },
   { label: '7Y', years: 7 },
   { label: '10Y', years: 10 },
+  { label: '20Y', years: 20 },
+  { label: '30Y', years: 30 },
 ];
 
 const COLORS = ['#60A5FA', '#34D399', '#F87171', '#FBBF24', '#A78BFA', '#FB923C'];

@@ -196,8 +196,13 @@ export default function ScenarioSimulator({ positions, baseDate, fundingRate, sh
             </div>
             <div className="flex items-center gap-2">
               <input
-                type="number" value={baseShockBp}
-                onChange={(e) => setBaseShockBp(Number(e.target.value))}
+                type="number"
+                step="any"
+                value={baseShockBp}
+                onChange={(e) => {
+                  const v = parseFloat(e.target.value);
+                  if (!isNaN(v)) setBaseShockBp(v);
+                }}
                 className="flex-1 bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-right text-lg font-bold text-white focus:outline-none focus:border-blue-500"
               />
               <span className="text-gray-400 font-medium text-sm">bp</span>
@@ -272,8 +277,12 @@ export default function ScenarioSimulator({ positions, baseDate, fundingRate, sh
                         <span className="text-xs text-gray-400 w-14 flex-shrink-0">{label}</span>
                         <input
                           type="number"
+                          step="any"
                           value={value}
-                          onChange={(e) => (set as (v: number) => void)(Number(e.target.value))}
+                          onChange={(e) => {
+                            const v = parseFloat(e.target.value);
+                            if (!isNaN(v)) (set as (v: number) => void)(v);
+                          }}
                           className="flex-1 bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-right text-white focus:outline-none focus:border-blue-500"
                         />
                         <span className="text-xs text-gray-500 w-5 flex-shrink-0">bp</span>
@@ -291,8 +300,12 @@ export default function ScenarioSimulator({ positions, baseDate, fundingRate, sh
                         <span className="text-xs text-gray-400 w-10 flex-shrink-0">{sector}</span>
                         <input
                           type="number"
+                          step="any"
                           value={creditSpreads[sector]}
-                          onChange={(e) => setCreditSpreads(prev => ({ ...prev, [sector]: Number(e.target.value) }))}
+                          onChange={(e) => {
+                            const v = parseFloat(e.target.value);
+                            if (!isNaN(v)) setCreditSpreads(prev => ({ ...prev, [sector]: v }));
+                          }}
                           className="flex-1 min-w-0 bg-gray-900 border border-gray-700 rounded px-1.5 py-1 text-xs text-right text-white focus:outline-none focus:border-blue-500"
                         />
                         <span className="text-xs text-gray-500">bp</span>
@@ -306,8 +319,12 @@ export default function ScenarioSimulator({ positions, baseDate, fundingRate, sh
                   <span className="text-xs text-gray-400 w-14 flex-shrink-0">IRS 스프레드</span>
                   <input
                     type="number"
+                    step="any"
                     value={irsSpread}
-                    onChange={(e) => setIrsSpread(Number(e.target.value))}
+                    onChange={(e) => {
+                      const v = parseFloat(e.target.value);
+                      if (!isNaN(v)) setIrsSpread(v);
+                    }}
                     className="flex-1 bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-right text-white focus:outline-none focus:border-blue-500"
                   />
                   <span className="text-xs text-gray-500 w-5 flex-shrink-0">bp</span>
