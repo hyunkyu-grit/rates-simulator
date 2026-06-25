@@ -81,7 +81,7 @@ export default function ScenarioSimulator({ positions, baseDate, fundingRate, sh
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [chartData, setChartData] = useState<any[]>([]);
-  const [summary, setSummary] = useState({ finalMTM: 0, finalCarry: 0, finalTotal: 0, breakEvenDay: -1 });
+  const [summary, setSummary] = useState({ finalMTM: 0, finalCarry: 0, finalSwap: 0, finalTotal: 0, breakEvenDay: -1 });
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const [chartContainerWidth, setChartContainerWidth] = useState(0);
 
@@ -512,21 +512,28 @@ export default function ScenarioSimulator({ positions, baseDate, fundingRate, sh
                 <p className="text-xs text-gray-400 mt-1">자본손익(MTM)과 이자수익(Carry)의 상쇄 효과 분석</p>
               </div>
               <div className="flex space-x-4 bg-gray-900 p-3 rounded-lg border border-gray-700">
-                <div className="text-center px-4 border-r border-gray-700">
+                <div className="text-center px-3 border-r border-gray-700">
                   <div className="flex items-center justify-center gap-1.5 mb-1">
                     <div className="w-2.5 h-2.5 rounded-full bg-red-500 flex-shrink-0" />
-                    <span className="text-xs text-gray-400">최종 MTM</span>
+                    <span className="text-xs text-gray-400">채권 MTM</span>
                   </div>
                   <div className="font-bold text-red-400">{fmtSigned(summary.finalMTM)}</div>
                 </div>
-                <div className="text-center px-4 border-r border-gray-700">
+                <div className="text-center px-3 border-r border-gray-700">
                   <div className="flex items-center justify-center gap-1.5 mb-1">
                     <div className="w-2.5 h-2.5 rounded-full bg-blue-500 flex-shrink-0" />
-                    <span className="text-xs text-gray-400">최종 누적캐리</span>
+                    <span className="text-xs text-gray-400">채권 캐리</span>
                   </div>
                   <div className="font-bold text-blue-400">{fmtSigned(summary.finalCarry)}</div>
                 </div>
-                <div className="text-center px-4">
+                <div className="text-center px-3 border-r border-gray-700">
+                  <div className="flex items-center justify-center gap-1.5 mb-1">
+                    <div className="w-2.5 h-2.5 rounded-full bg-violet-400 flex-shrink-0" />
+                    <span className="text-xs text-gray-400">스왑손익</span>
+                  </div>
+                  <div className="font-bold text-violet-400">{fmtSigned(summary.finalSwap)}</div>
+                </div>
+                <div className="text-center px-3">
                   <div className="flex items-center justify-center gap-1.5 mb-1">
                     <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 flex-shrink-0" />
                     <span className="text-xs text-gray-400">Total Return</span>
@@ -626,8 +633,9 @@ export default function ScenarioSimulator({ positions, baseDate, fundingRate, sh
                   {summary.breakEvenDay > 0 && (
                     <ReferenceLine x={summary.breakEvenDay} stroke="#10B981" strokeDasharray="3 3" label={{ position: 'top', value: 'BEP', fill: '#10B981', fontSize: 12 }} />
                   )}
-                  <Line type="monotone" dataKey="mtmPnL" stroke="#EF4444" strokeWidth={2} dot={false} name="평가손익(MTM)" />
-                  <Line type="monotone" dataKey="cumulativeCarry" stroke="#3B82F6" strokeWidth={2} dot={false} name="누적 이자수익(Carry)" />
+                  <Line type="monotone" dataKey="mtmPnL" stroke="#EF4444" strokeWidth={2} dot={false} name="채권 평가손익(MTM)" />
+                  <Line type="monotone" dataKey="cumulativeCarry" stroke="#3B82F6" strokeWidth={2} dot={false} name="채권 누적캐리(Carry)" />
+                  <Line type="monotone" dataKey="swapPnL" stroke="#A78BFA" strokeWidth={2} dot={false} name="스왑손익(IRS)" />
                   <Line type="monotone" dataKey="totalPnL" stroke="#10B981" strokeWidth={4} dot={false} name="Total Return (합계)" />
                 </LineChart>
               </ResponsiveContainer>}

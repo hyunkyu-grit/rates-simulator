@@ -338,7 +338,8 @@ def build_chart_data(
         base_date = date.today()
 
     chart_data: list[dict] = []
-    cumulative_carry = 0.0
+    cumulative_bond_carry = 0.0   # 채권 캐리 + 만기 재투자 수익
+    cumulative_irs_carry  = 0.0   # IRS 일별 캐리 누적
     break_even_day = -1
     is_broken_even = False
 
@@ -474,7 +475,7 @@ def build_chart_data(
 
         # 채권: 기존 선형 MTM / IRS: FM 결과 직접 사용 (내부에서 이미 ramp/step 적용)
         bond_mtm  = calculate_daily_mtm(bond_positions, shock_mode, shock_type, base_shock_bp, shock_curves, multiplier, t, current_date, short_mult)
-        daily_mtm = bond_mtm + float(irs_fm_mtm[t])
+        irs_mtm_t = float(irs_fm_mtm[t])
 
         # BOK 이벤트 당일: 구간별(3M미만/3M~1Y/1Y이상) MTM 변화 분해 (검증용)
         bok_breakdown = None
@@ -497,10 +498,9 @@ def build_chart_data(
                 bd[f"{zone_name}Pvbp"]  = round(zone_pvbp)
             bok_breakdown = bd
         # 일별 캐리: 채권만 calculate_daily_carry, IRS는 FM 엔진 리턴 값 사용 (리픽싱 비선형 반영)
-        bond_carry = calculate_daily_carry(bond_positions, shock_mode, shock_type, base_shock_bp, shock_curves, active_rate, multiplier, t, current_date)
+        bond_carry  = calculate_daily_carry(bond_positions, shock_mode, shock_type, base_shock_bp, shock_curves, active_rate, multiplier, t, current_date)
         irs_carry_t = float(irs_fm_carry[t])
-        daily_carry = bond_carry + irs_carry_t
-        # 만기 체권의 재투자 수익: Notional 기준으로 Funding Cost와 정확히 상쿠
+        # 만기 채권의 재투자 수익: Notional 기준으로 Funding Cost와 정확히 상쇄
         reinvested_cash = sum(
             p.notional or 0.0
             for p in bond_positions
@@ -508,22 +508,30 @@ def build_chart_data(
         )
         daily_cash_return = reinvested_cash * active_rate / 365.0
 
-        cumulative_carry += (daily_carry or 0.0) + daily_cash_return
+        # 채권 캐리 / IRS 캐리 분리 누적
+        cumulative_bond_carry += (bond_carry or 0.0) + daily_cash_return
+        cumulative_irs_carry  += (irs_carry_t or 0.0)
+
         if abs(irs_carry_t) > 50_000_000 or abs(daily_cash_return) > 50_000_000:
             print(f"[CARRY-DIAG] Day {t}: irs_carry={irs_carry_t:,.0f}  "
                   f"bond_carry={bond_carry:,.0f}  cash_return={daily_cash_return:,.0f}  "
-                  f"cum_carry={cumulative_carry:,.0f}")
-        total_pnl = daily_mtm + cumulative_carry
+                  f"cum_bond_carry={cumulative_bond_carry:,.0f}")
 
-        if total_pnl >= 0 and daily_mtm < 0 and not is_broken_even:
+        # 스왑손익 = IRS MTM + 누적 IRS 캐리
+        swap_pnl  = irs_mtm_t + cumulative_irs_carry
+        total_pnl = bond_mtm + cumulative_bond_carry + swap_pnl
+        total_mtm = bond_mtm + irs_mtm_t   # BEP 체크용
+
+        if total_pnl >= 0 and total_mtm < 0 and not is_broken_even:
             break_even_day = t
             is_broken_even = True
 
         entry: dict = {
             "day": t,
-            "mtmPnL": round(daily_mtm) if daily_mtm else 0,
-            "cumulativeCarry": round(cumulative_carry) if cumulative_carry else 0,
-            "totalPnL": round(total_pnl) if total_pnl else 0,
+            "mtmPnL":         round(bond_mtm)             if bond_mtm             else 0,
+            "cumulativeCarry": round(cumulative_bond_carry) if cumulative_bond_carry else 0,
+            "swapPnL":        round(swap_pnl)              if swap_pnl             else 0,
+            "totalPnL":       round(total_pnl)             if total_pnl            else 0,
         }
         if bok_breakdown:
             entry["bokBreakdown"] = bok_breakdown
@@ -531,8 +539,9 @@ def build_chart_data(
 
     last = chart_data[-1] if chart_data else {}
     summary = {
-        "finalMTM": last.get("mtmPnL", 0),
+        "finalMTM":   last.get("mtmPnL", 0),
         "finalCarry": last.get("cumulativeCarry", 0),
+        "finalSwap":  last.get("swapPnL", 0),
         "finalTotal": last.get("totalPnL", 0),
         "breakEvenDay": break_even_day,
     }
