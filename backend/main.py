@@ -258,31 +258,24 @@ def calculate_daily_mtm(
 
 def calculate_daily_carry(
     positions: list[FrontendPosition],
-    shock_mode: str,
-    shock_type: str,
-    base_shock_bp: float,
-    shock_curves: FrontendShockCurves | None,
     active_funding_rate: float,
-    multiplier: float,
     t: int,
     current_date: date | None = None,
 ) -> float:
     total = 0.0
     for p in positions:
+        if p.bondType == "swap":
+            continue  # IRS carry는 FM 엔진(irs_fm_carry)이 전담
         initial_remaining = max(float(p.remainingDays or 0), 0.0)
         matured = (current_date and _is_matured(p, current_date)) or (initial_remaining > 0 and t >= initial_remaining)
-
-        if p.bondType != "swap":
-            if matured:
-                # 조달의 연속성: 만기 후에도 Notional에 대한 Funding Cost 유지
-                total -= (p.notional or 0.0) * active_funding_rate / 365.0
-            else:
-                shock_bp = get_position_shock_bp(p, shock_mode, shock_type, base_shock_bp, shock_curves, multiplier, t)
-                eval_amt = p.evaluationAmount or 0.0
-                carry_rate = (p.mtmYield or 0.0) + shock_bp / 100.0
-                total += (eval_amt * (carry_rate / 100.0)) / 365.0 - (eval_amt * active_funding_rate) / 365.0
+        if matured:
+            # 조달의 연속성: 만기 후에도 Notional에 대한 Funding Cost 유지
+            total -= (p.notional or 0.0) * active_funding_rate / 365.0
         else:
-            continue  # IRS carry는 FM 엔진(irs_fm_carry)이 전담 — static theta 이중 계산 방지
+            eval_amt  = p.evaluationAmount or 0.0
+            # 고정금리 채권 쿠폰 캐리: 금리 충격은 MTM에만 반영되고 carry에는 무관
+            carry_rate = (p.mtmYield or 0.0)
+            total += (eval_amt * (carry_rate / 100.0)) / 365.0 - (eval_amt * active_funding_rate) / 365.0
     return total
 
 
@@ -477,7 +470,7 @@ def build_chart_data(
                 bd[f"{zone_name}Pvbp"]  = round(zone_pvbp)
             bok_breakdown = bd
         # 일별 캐리: 채권만 calculate_daily_carry, IRS는 FM 엔진 리턴 값 사용 (리픽싱 비선형 반영)
-        bond_carry  = calculate_daily_carry(bond_positions, shock_mode, shock_type, base_shock_bp, shock_curves, active_rate, multiplier, t, current_date)
+        bond_carry  = calculate_daily_carry(bond_positions, active_rate, t, current_date)
         irs_carry_t = float(irs_fm_carry[t])
         # 만기 채권의 재투자 수익: Notional 기준으로 Funding Cost와 정확히 상쇄
         reinvested_cash = sum(
@@ -487,9 +480,10 @@ def build_chart_data(
         )
         daily_cash_return = reinvested_cash * active_rate / 365.0
 
-        # 채권 캐리 / IRS 캐리 분리 누적
-        cumulative_bond_carry += (bond_carry or 0.0) + daily_cash_return
-        cumulative_irs_carry  += (irs_carry_t or 0.0)
+        # Day 0은 모든 손익이 0에서 출발 — Day 1부터 캐리 누적
+        if t > 0:
+            cumulative_bond_carry += (bond_carry or 0.0) + daily_cash_return
+            cumulative_irs_carry  += (irs_carry_t or 0.0)
 
         # 스왑손익 = IRS MTM + 누적 IRS 캐리
         swap_pnl  = irs_mtm_t + cumulative_irs_carry
