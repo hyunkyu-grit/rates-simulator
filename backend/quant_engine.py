@@ -731,18 +731,18 @@ def simulate_irs_path_fm(
                 break  # 만기 이후: 잔여 배열은 0 유지 (zero-padding)
 
             # 8. Full Revaluation (FM) NPV 재평가 (만기 전)
-            # sim_date=None: 시뮬레이션 루프에서는 영업일 조정 생략 (균일 고정 주기 사용)
-            # 이 옵션이 단순 MTM 경로 추적에서 약 50% 속도 향상을 제공함
-            # (ACT/365 정밀도 영향: ±2일 오차 → 할인 오차 < 0.02%, MTM 차이값에서 상쇄)
+            # sim_date 필수: npv_s_initial(Day 0)이 sim_date 기반으로 계산되므로
+            # 루프 내에서도 동일한 방식으로 계산해야 Day 1 NPV 불일치 스파이크 없음
+            _sim_date = (_base_date + timedelta(days=day)) if _base_date else None
             npv_s  = compute_irs_npv(notional, fixed_rate_pct, direction,
                                       t_mat_s, t_nxt_s, flt_s, sector, zc_s,
-                                      fixed_freq, float_freq, sim_date=None)
+                                      fixed_freq, float_freq, sim_date=_sim_date)
             npv_b  = compute_irs_npv(notional, fixed_rate_pct, direction,
                                       t_mat_b, t_nxt_b, flt_b, sector, zc_base,
-                                      fixed_freq, float_freq, sim_date=None)
+                                      fixed_freq, float_freq, sim_date=_sim_date)
             npv_s1 = compute_irs_npv(notional, fixed_rate_pct, direction,
                                       t_mat_s, t_nxt_s, flt_s, sector, zc_s1,
-                                      fixed_freq, float_freq, sim_date=None)
+                                      fixed_freq, float_freq, sim_date=_sim_date)
 
             # 9. IRS 총 P&L = MTM (시나리오 경로 기준) — carry = 0
             # mtm_pnl[day]: Day 0 대비 누적 P&L 레벨 (리픽싱 금리도 shocked curve 반영)
