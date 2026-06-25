@@ -587,8 +587,9 @@ export default function ScenarioSimulator({ positions, baseDate, fundingRate, sh
                   <table className="w-full text-xs">
                     <thead>
                       <tr className="text-gray-400 border-b border-gray-700">
-                        <th className="text-left py-1">이벤트일</th>
-                        <th className="text-right py-1">3M 미만<br/><span className="text-gray-600 font-normal">BOK 직결</span></th>
+                        <th className="text-left py-1 w-16">이벤트일</th>
+                        <th className="text-right py-1">1D<br/><span className="text-gray-600 font-normal">오버나이트</span></th>
+                        <th className="text-right py-1">3M 이하<br/><span className="text-gray-600 font-normal">BOK 직결</span></th>
                         <th className="text-right py-1">3M~1Y<br/><span className="text-gray-600 font-normal">블렌드</span></th>
                         <th className="text-right py-1">1Y 이상<br/><span className="text-gray-600 font-normal">장기경로</span></th>
                         <th className="text-right py-1 font-bold">합계</th>
@@ -598,38 +599,58 @@ export default function ScenarioSimulator({ positions, baseDate, fundingRate, sh
                       {bokEvents.map((d: any) => {
                         const b = d.bokBreakdown;
                         const bondTotal = b.shortDelta + b.blendDelta + b.longDelta;
-                        const irsTotal  = (b.irsShortDelta ?? 0) + (b.irsBlendDelta ?? 0) + (b.irsLongDelta ?? 0);
-                        const hasIrs    = b.irsShortPvbp !== undefined &&
-                          (Math.abs(b.irsShortPvbp) + Math.abs(b.irsBlendPvbp ?? 0) + Math.abs(b.irsLongPvbp ?? 0)) > 0;
+                        const irsTotal  = (b.irs1dDelta ?? 0) + (b.irs3mDelta ?? 0) + (b.irsBlendDelta ?? 0) + (b.irsLongDelta ?? 0);
+                        const hasIrs    = (b.irs1dPvbp !== undefined || b.irs3mPvbp !== undefined) &&
+                          (Math.abs(b.irs1dPvbp ?? 0) + Math.abs(b.irs3mPvbp ?? 0) + Math.abs(b.irsBlendPvbp ?? 0) + Math.abs(b.irsLongPvbp ?? 0)) > 0;
+
                         const clr = (v: number) => v < 0 ? 'text-red-400' : v > 0 ? 'text-blue-400' : 'text-gray-500';
-                        const impliedBp = (delta: number, pvbp: number) =>
-                          pvbp > 0 ? Math.round(-delta / pvbp * 10) / 10 : null;
+                        // 채권: pvbp 대비 역산 변동폭
+                        const bondImpliedBp = (delta: number, pvbp: number) =>
+                          pvbp !== 0 ? Math.round(-delta / pvbp * 10) / 10 : null;
+                        // IRS: pvbp(net KRD)가 0이 아닐 때만
+                        const irsImpliedBp = (delta: number, pvbp: number) =>
+                          Math.abs(pvbp) > 100 ? Math.round(-delta / pvbp * 10) / 10 : null;
+                        const fmtBp = (bp: number | null) =>
+                          bp === null ? null : `${bp >= 0 ? '+' : ''}${bp}bp`;
                         const fmtPvbp = (v: number) => {
                           const man = Math.round(v / 10000);
                           return (man >= 0 ? '+' : '') + man.toLocaleString() + '만';
                         };
-                        const shortBp = impliedBp(b.shortDelta, b.shortPvbp);
-                        const blendBp = impliedBp(b.blendDelta, b.blendPvbp);
-                        const longBp  = impliedBp(b.longDelta,  b.longPvbp);
+
+                        const shortBp = bondImpliedBp(b.shortDelta, b.shortPvbp);
+                        const blendBp = bondImpliedBp(b.blendDelta, b.blendPvbp);
+                        const longBp  = bondImpliedBp(b.longDelta,  b.longPvbp);
+
+                        // IRS 구간별 역산 변동폭
+                        const irs1dBp    = irsImpliedBp(b.irs1dDelta    ?? 0, b.irs1dPvbp    ?? 0);
+                        const irs3mBp    = irsImpliedBp(b.irs3mDelta    ?? 0, b.irs3mPvbp    ?? 0);
+                        const irsBlendBp = irsImpliedBp(b.irsBlendDelta ?? 0, b.irsBlendPvbp ?? 0);
+                        const irsLongBp  = irsImpliedBp(b.irsLongDelta  ?? 0, b.irsLongPvbp  ?? 0);
+
+                        // 라벨 공통 스타일
+                        const labelStyle = "text-[10px] font-semibold mt-0.5";
+
                         return (
                           <React.Fragment key={d.day}>
                             {/* 채권 행 */}
                             <tr className="border-t border-gray-700/50">
-                              <td className="py-1.5 text-gray-300">
-                                {fmtDateShort(d.day)}
-                                {hasIrs && <div className="text-[9px] text-gray-600 mt-0.5">채권</div>}
+                              <td className="py-1.5 text-gray-300 align-top">
+                                <div>{fmtDateShort(d.day)}</div>
+                                <div className={`${labelStyle} text-gray-400`}>채권</div>
                               </td>
+                              {/* 1D: 채권은 1D 구간 없음 */}
+                              <td className="py-1.5 text-right text-gray-600">—</td>
                               <td className={`py-1.5 text-right ${clr(b.shortDelta)}`}>
-                                {fmtBok(b.shortDelta)}
-                                {shortBp !== null && <span className="text-gray-500 ml-1">({shortBp}bp)</span>}
+                                <div>{fmtBok(b.shortDelta)}</div>
+                                {shortBp !== null && <div className="text-gray-500">{fmtBp(shortBp)}</div>}
                               </td>
                               <td className={`py-1.5 text-right ${clr(b.blendDelta)}`}>
-                                {fmtBok(b.blendDelta)}
-                                {blendBp !== null && <span className="text-gray-500 ml-1">({blendBp}bp)</span>}
+                                <div>{fmtBok(b.blendDelta)}</div>
+                                {blendBp !== null && <div className="text-gray-500">{fmtBp(blendBp)}</div>}
                               </td>
                               <td className={`py-1.5 text-right ${clr(b.longDelta)}`}>
-                                {fmtBok(b.longDelta)}
-                                {longBp !== null && <span className="text-gray-500 ml-1">({longBp}bp)</span>}
+                                <div>{fmtBok(b.longDelta)}</div>
+                                {longBp !== null && <div className="text-gray-500">{fmtBp(longBp)}</div>}
                               </td>
                               <td className={`py-1.5 text-right font-bold ${bondTotal < 0 ? 'text-red-300' : 'text-emerald-300'}`}>
                                 {fmtBok(bondTotal)}
@@ -638,20 +659,31 @@ export default function ScenarioSimulator({ positions, baseDate, fundingRate, sh
                             {/* IRS 행 */}
                             {hasIrs && (
                               <tr className="bg-indigo-950/20">
-                                <td className="py-1 text-[10px] text-indigo-400 font-semibold pl-2">└ IRS</td>
-                                <td className={`py-1 text-right ${clr(b.irsShortDelta)}`}>
-                                  <div>{fmtBok(b.irsShortDelta ?? 0)}</div>
-                                  <div className="text-[10px] text-gray-500">PVBP {fmtPvbp(b.irsShortPvbp ?? 0)}</div>
+                                <td className="py-1.5 text-gray-300 align-top">
+                                  <div className="text-xs invisible select-none">—</div>
+                                  <div className={`${labelStyle} text-indigo-400`}>IRS</div>
                                 </td>
-                                <td className={`py-1 text-right ${clr(b.irsBlendDelta)}`}>
+                                <td className={`py-1.5 text-right ${clr(b.irs1dDelta ?? 0)}`}>
+                                  <div>{fmtBok(b.irs1dDelta ?? 0)}</div>
+                                  <div className="text-gray-500">PVBP {fmtPvbp(b.irs1dPvbp ?? 0)}</div>
+                                  {irs1dBp !== null && <div className="text-gray-500">{fmtBp(irs1dBp)}</div>}
+                                </td>
+                                <td className={`py-1.5 text-right ${clr(b.irs3mDelta ?? 0)}`}>
+                                  <div>{fmtBok(b.irs3mDelta ?? 0)}</div>
+                                  <div className="text-gray-500">PVBP {fmtPvbp(b.irs3mPvbp ?? 0)}</div>
+                                  {irs3mBp !== null && <div className="text-gray-500">{fmtBp(irs3mBp)}</div>}
+                                </td>
+                                <td className={`py-1.5 text-right ${clr(b.irsBlendDelta ?? 0)}`}>
                                   <div>{fmtBok(b.irsBlendDelta ?? 0)}</div>
-                                  <div className="text-[10px] text-gray-500">PVBP {fmtPvbp(b.irsBlendPvbp ?? 0)}</div>
+                                  <div className="text-gray-500">PVBP {fmtPvbp(b.irsBlendPvbp ?? 0)}</div>
+                                  {irsBlendBp !== null && <div className="text-gray-500">{fmtBp(irsBlendBp)}</div>}
                                 </td>
-                                <td className={`py-1 text-right ${clr(b.irsLongDelta)}`}>
+                                <td className={`py-1.5 text-right ${clr(b.irsLongDelta ?? 0)}`}>
                                   <div>{fmtBok(b.irsLongDelta ?? 0)}</div>
-                                  <div className="text-[10px] text-gray-500">PVBP {fmtPvbp(b.irsLongPvbp ?? 0)}</div>
+                                  <div className="text-gray-500">PVBP {fmtPvbp(b.irsLongPvbp ?? 0)}</div>
+                                  {irsLongBp !== null && <div className="text-gray-500">{fmtBp(irsLongBp)}</div>}
                                 </td>
-                                <td className={`py-1 text-right font-bold ${irsTotal < 0 ? 'text-red-300' : 'text-emerald-300'}`}>
+                                <td className={`py-1.5 text-right font-bold ${irsTotal < 0 ? 'text-red-300' : 'text-emerald-300'}`}>
                                   {fmtBok(irsTotal)}
                                 </td>
                               </tr>
@@ -661,7 +693,7 @@ export default function ScenarioSimulator({ positions, baseDate, fundingRate, sh
                       })}
                     </tbody>
                   </table>
-                  <p className="text-gray-600 text-xs mt-1.5">채권: 구간 PVBP 대비 역산 금리변동(괄호) · IRS: KRD × BOK 단기충격 귀속 손익 / PVBP = 구간 KRD 합산</p>
+                  <p className="text-gray-600 text-xs mt-1.5">괄호/bp = 구간 PVBP 역산 금리변동폭 · IRS PVBP = 구간 KRD 합산(음수=단기수취·PAY고정) · 1D=오버나이트 KRD</p>
                 </div>
               );
             })()}
