@@ -498,9 +498,11 @@ def build_chart_data(
                 bd[f"{zone_name}Delta"] = round(cur_m - prev_m)
                 bd[f"{zone_name}Pvbp"]  = round(zone_pvbp)
 
-            # IRS KRD 구간별 분해: BOK 단기 충격 × KRD PVBP 귀속 (1D / 3M / 3M~1Y / 1Y이상)
-            _delta_short_bp = (short_mult - _short_factor(t - 1)) * base_shock_bp
-            _delta_long_bp  = (multiplier - _factor(t - 1)) * base_shock_bp
+            # IRS KRD 구간별 분해: BOK 이벤트 실제 shiftBp 직접 사용 (1D / 3M / 3M~1Y / 1Y이상)
+            # fraction×base_shock_bp 대신 당일 이벤트 shiftBp 합산을 사용해야
+            # 유저가 설정한 bp(예: 25bp)가 그대로 표시·계산에 반영됨
+            _bok_event_bp  = sum(e["bp"] for e in _short_evts if e["day"] == t)
+            _delta_long_bp = (multiplier - _factor(t - 1)) * base_shock_bp
             _KRD_PAIRS = [
                 ("1D", 1/365), ("3M", 0.25), ("6M", 0.5),  ("9M", 0.75),
                 ("1Y", 1.0),   ("1.5Y", 1.5), ("2Y", 2.0), ("3Y", 3.0),
@@ -515,21 +517,25 @@ def build_chart_data(
                     if abs(_kv) < 1:
                         continue
                     if _ty < 0.1:          # 1D
-                        _irs_1p += _kv;  _irs_1d -= _kv * _delta_short_bp
+                        _irs_1p += _kv;  _irs_1d -= _kv * _bok_event_bp
                     elif _ty <= 0.25:      # 3M
-                        _irs_3p += _kv;  _irs_3d -= _kv * _delta_short_bp
-                    elif _ty <= 1.0:       # 3M~1Y (블렌드)
+                        _irs_3p += _kv;  _irs_3d -= _kv * _bok_event_bp
+                    elif _ty <= 1.0:       # 3M~1Y (BOK→장기 선형 블렌드)
                         _w = (_ty - 0.25) / 0.75
-                        _irs_bp += _kv;  _irs_bd -= _kv * (_delta_short_bp * (1 - _w) + _delta_long_bp * _w)
+                        _dbp = _bok_event_bp * (1 - _w) + _delta_long_bp * _w
+                        _irs_bp += _kv;  _irs_bd -= _kv * _dbp
                     else:                  # 1Y이상
                         _irs_lp += _kv;  _irs_ld -= _kv * _delta_long_bp
+            # 블렌드 구간 대표 변동폭: 0.625Y(6M~9M 중간) 기준 블렌드
+            _blend_mid_bp = round((_bok_event_bp * 0.5 + _delta_long_bp * 0.5) * 10) / 10
             bd.update({
                 "irs1dPvbp":    round(_irs_1p), "irs1dDelta":    round(_irs_1d),
                 "irs3mPvbp":    round(_irs_3p), "irs3mDelta":    round(_irs_3d),
                 "irsBlendPvbp": round(_irs_bp), "irsBlendDelta": round(_irs_bd),
                 "irsLongPvbp":  round(_irs_lp), "irsLongDelta":  round(_irs_ld),
-                "bokShortBp":   round(_delta_short_bp * 10) / 10,
-                "bokLongBp":    round(_delta_long_bp  * 10) / 10,
+                "bokShortBp":   round(_bok_event_bp  * 10) / 10,   # BOK 이벤트 실제 bp
+                "bokBlendBp":   _blend_mid_bp,                       # 블렌드 중간점
+                "bokLongBp":    round(_delta_long_bp * 10) / 10,    # 장기 경로 변화
             })
             bok_breakdown = bd
         # 일별 캐리: 채권만 calculate_daily_carry, IRS는 FM 엔진 리턴 값 사용 (리픽싱 비선형 반영)

@@ -604,14 +604,11 @@ export default function ScenarioSimulator({ positions, baseDate, fundingRate, sh
                           (Math.abs(b.irs1dPvbp ?? 0) + Math.abs(b.irs3mPvbp ?? 0) + Math.abs(b.irsBlendPvbp ?? 0) + Math.abs(b.irsLongPvbp ?? 0)) > 0;
 
                         const clr = (v: number) => v < 0 ? 'text-red-400' : v > 0 ? 'text-blue-400' : 'text-gray-500';
-                        // 채권: pvbp 대비 역산 변동폭
+                        // 채권: pvbp 대비 역산 변동폭 (bond pvbp는 단일 방향이라 안전)
                         const bondImpliedBp = (delta: number, pvbp: number) =>
                           pvbp !== 0 ? Math.round(-delta / pvbp * 10) / 10 : null;
-                        // IRS: pvbp(net KRD)가 0이 아닐 때만
-                        const irsImpliedBp = (delta: number, pvbp: number) =>
-                          Math.abs(pvbp) > 100 ? Math.round(-delta / pvbp * 10) / 10 : null;
-                        const fmtBp = (bp: number | null) =>
-                          bp === null ? null : `${bp >= 0 ? '+' : ''}${bp}bp`;
+                        const fmtBp = (bp: number | null | undefined) =>
+                          bp == null ? null : `${bp >= 0 ? '+' : ''}${bp}bp`;
                         const fmtPvbp = (v: number) => {
                           const man = Math.round(v / 10000);
                           return (man >= 0 ? '+' : '') + man.toLocaleString() + '만';
@@ -621,11 +618,12 @@ export default function ScenarioSimulator({ positions, baseDate, fundingRate, sh
                         const blendBp = bondImpliedBp(b.blendDelta, b.blendPvbp);
                         const longBp  = bondImpliedBp(b.longDelta,  b.longPvbp);
 
-                        // IRS 구간별 역산 변동폭
-                        const irs1dBp    = irsImpliedBp(b.irs1dDelta    ?? 0, b.irs1dPvbp    ?? 0);
-                        const irs3mBp    = irsImpliedBp(b.irs3mDelta    ?? 0, b.irs3mPvbp    ?? 0);
-                        const irsBlendBp = irsImpliedBp(b.irsBlendDelta ?? 0, b.irsBlendPvbp ?? 0);
-                        const irsLongBp  = irsImpliedBp(b.irsLongDelta  ?? 0, b.irsLongPvbp  ?? 0);
+                        // IRS 변동폭: net KRD 역산 대신 백엔드에서 계산한 실제 충격 bp 직접 사용
+                        // (net KRD는 pay/receive 상쇄로 0에 가까울 수 있어 역산 시 발산)
+                        const irs1dBp    = b.bokShortBp  ?? null;
+                        const irs3mBp    = b.bokShortBp  ?? null;
+                        const irsBlendBp = b.bokBlendBp  ?? null;
+                        const irsLongBp  = b.bokLongBp   ?? null;
 
                         // 라벨 공통 스타일
                         const labelStyle = "text-[10px] font-semibold mt-0.5";
