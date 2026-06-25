@@ -50,9 +50,11 @@ export interface PositionSummary {
   notional: number;
   avgPrice: number;
   ytm: number;
-  totalEvaluationAmount: number;
-  weightedAvgYTM: number;
-  portfolioDuration: number;
+  totalNotional: number;          // 채권 액면 합계
+  totalEvaluationAmount: number;  // 채권평가 합계
+  weightedAvgYTM: number;         // 평균민평수익률
+  portfolioDuration: number;      // 채권 단순 듀레이션
+  hedgedDuration: number;         // 헷지 후 듀레이션 (IRS 포함 순 PVBP 기준)
   sectorAllocation: { [key: string]: number };
   maturityAllocation: { [key: string]: number };
   top3: any[];

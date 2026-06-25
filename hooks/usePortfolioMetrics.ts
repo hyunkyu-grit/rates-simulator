@@ -12,6 +12,75 @@ export const usePortfolioMetrics = (
   const [bookDailyPnLs, setBookDailyPnLs] = useState<BookDailyPnL[]>([]);
   const [positionSummaries, setPositionSummaries] = useState<PositionSummary[]>([]);
 
+  // 북별 요약 — positions에서 직접 계산 (백엔드 불필요)
+  useEffect(() => {
+    if (!positions || positions.length === 0) { setPositionSummaries([]); return; }
+
+    const books = [...new Set(positions.map(p => p.book))];
+    const summaries: PositionSummary[] = books.map(book => {
+      const all   = positions.filter(p => p.book === book);
+      const bonds = all.filter(p => p.bondType !== 'swap');
+
+      const totalNotional  = bonds.reduce((s, p) => s + (p.notional || 0), 0);
+      const totalEvalAmt   = bonds.reduce((s, p) => s + (p.evaluationAmount || 0), 0);
+      const weightedYield  = totalEvalAmt > 0
+        ? bonds.reduce((s, p) => s + (p.mtmYield || 0) * (p.evaluationAmount || 0), 0) / totalEvalAmt
+        : 0;
+
+      // 헷지 후 듀레이션: 전 종목(채권+IRS) 순 PVBP × 10000 / 채권평가
+      const netPvbp = all.reduce((s, p) => s + (p.pvbp || 0) * (p.direction || 1), 0);
+      const hedgedDuration = totalEvalAmt > 0 ? (netPvbp * 10000) / totalEvalAmt : 0;
+
+      // 채권만 단순 듀레이션 (IRS 제외)
+      const bondPvbp = bonds.reduce((s, p) => s + (p.pvbp || 0), 0);
+      const portfolioDuration = totalEvalAmt > 0 ? (bondPvbp * 10000) / totalEvalAmt : 0;
+
+      // 섹터 배분
+      const sectorTotals: { [k: string]: number } = {};
+      bonds.forEach(p => { sectorTotals[p.sector] = (sectorTotals[p.sector] || 0) + (p.evaluationAmount || 0); });
+      const sectorAllocation: { [k: string]: number } = {};
+      Object.keys(sectorTotals).forEach(k => {
+        sectorAllocation[k] = totalEvalAmt > 0 ? (sectorTotals[k] / totalEvalAmt) * 100 : 0;
+      });
+
+      // 만기 배분
+      const maturBuckets = { '단기(1년 미만)': 0, '중기(1~3년)': 0, '장기(3년 이상)': 0 };
+      bonds.forEach(p => {
+        const yr = (p.remainingDays || 0) / 365;
+        if (yr < 1) maturBuckets['단기(1년 미만)'] += p.evaluationAmount || 0;
+        else if (yr < 3) maturBuckets['중기(1~3년)'] += p.evaluationAmount || 0;
+        else maturBuckets['장기(3년 이상)'] += p.evaluationAmount || 0;
+      });
+      const maturityAllocation: { [k: string]: number } = {};
+      (Object.keys(maturBuckets) as (keyof typeof maturBuckets)[]).forEach(k => {
+        maturityAllocation[k] = totalEvalAmt > 0 ? (maturBuckets[k] / totalEvalAmt) * 100 : 0;
+      });
+
+      // Top3 / Bottom3 by daily PnL
+      const sorted = [...bonds].sort((a, b) => (b.totalDailyPnL || 0) - (a.totalDailyPnL || 0));
+      const top3    = sorted.slice(0, 3);
+      const bottom3 = sorted.slice(-3).reverse();
+      const totalDailyPnL = all.reduce((s, p) => s + (p.totalDailyPnL || 0), 0);
+
+      return {
+        bookName: book,
+        instrumentName: '', assetType: 'mixed', direction: 'Long' as const,
+        notional: totalNotional, avgPrice: 0, ytm: weightedYield,
+        totalNotional,
+        totalEvaluationAmount: totalEvalAmt,
+        weightedAvgYTM: weightedYield,
+        portfolioDuration,
+        hedgedDuration,
+        sectorAllocation,
+        maturityAllocation,
+        top3, bottom3,
+        totalDailyPnL,
+        pvbp: bondPvbp,
+      };
+    });
+    setPositionSummaries(summaries);
+  }, [positions]);
+
   const fetchBaseMetrics = useCallback(async () => {
     if (!positions || positions.length === 0) {
       setPvbpSensitivity([]);
