@@ -258,7 +258,12 @@ def calculate_daily_mtm(
 
 def calculate_daily_carry(
     positions: list[FrontendPosition],
+    shock_mode: str,
+    shock_type: str,
+    base_shock_bp: float,
+    shock_curves: FrontendShockCurves | None,
     active_funding_rate: float,
+    multiplier: float,
     t: int,
     current_date: date | None = None,
 ) -> float:
@@ -272,9 +277,12 @@ def calculate_daily_carry(
             # 조달의 연속성: 만기 후에도 Notional에 대한 Funding Cost 유지
             total -= (p.notional or 0.0) * active_funding_rate / 365.0
         else:
-            eval_amt  = p.evaluationAmount or 0.0
-            # 고정금리 채권 쿠폰 캐리: 금리 충격은 MTM에만 반영되고 carry에는 무관
-            carry_rate = (p.mtmYield or 0.0)
+            shock_bp   = get_position_shock_bp(p, shock_mode, shock_type, base_shock_bp, shock_curves, multiplier, t)
+            eval_amt   = p.evaluationAmount or 0.0
+            # 금리 경로에 따라 채권 운용수익률도 상승 (carry_rate = mtmYield + 경로상 bp 변동)
+            # 조달금리(active_funding_rate)는 금통위 이벤트 시 BOK bp만큼 이미 상승 반영됨
+            # → 두 효과가 서로 상쇄되어 순 carry 변화는 (금리경로 - BOK 인상) 차이만큼
+            carry_rate = (p.mtmYield or 0.0) + shock_bp / 100.0
             total += (eval_amt * (carry_rate / 100.0)) / 365.0 - (eval_amt * active_funding_rate) / 365.0
     return total
 
@@ -470,7 +478,7 @@ def build_chart_data(
                 bd[f"{zone_name}Pvbp"]  = round(zone_pvbp)
             bok_breakdown = bd
         # 일별 캐리: 채권만 calculate_daily_carry, IRS는 FM 엔진 리턴 값 사용 (리픽싱 비선형 반영)
-        bond_carry  = calculate_daily_carry(bond_positions, active_rate, t, current_date)
+        bond_carry  = calculate_daily_carry(bond_positions, shock_mode, shock_type, base_shock_bp, shock_curves, active_rate, multiplier, t, current_date)
         irs_carry_t = float(irs_fm_carry[t])
         # 만기 채권의 재투자 수익: Notional 기준으로 Funding Cost와 정확히 상쇄
         reinvested_cash = sum(
