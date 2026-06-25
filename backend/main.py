@@ -357,6 +357,12 @@ def build_chart_data(
         if irs_shock_curve_prebuilt is not None
         else _build_irs_shock_curve(shock_mode, base_shock_bp, shock_curves)
     )
+    irs_settlement_events: list[dict] = []
+    _base_dt = None
+    try:
+        _base_dt = date.fromisoformat(base_date_str[:10]) if base_date_str else None
+    except Exception:
+        pass
 
     for i, p in enumerate(irs_positions):
         t_mat = max(float(p.remainingDays or 0) / 365.0, 1 / 365)
@@ -372,7 +378,7 @@ def build_chart_data(
         t_next = max(min(t_next, t_mat), 1.0 / 365.0)
 
         try:
-            mtm_arr, _, carry_arr, *_ = qe.simulate_irs_path_fm(
+            mtm_arr, _, carry_arr, metrics, *_ = qe.simulate_irs_path_fm(
                 par_rates              = par_rates,
                 notional               = p.notional or 0.0,
                 fixed_rate_pct         = p.couponRate or 0.0,
@@ -388,6 +394,21 @@ def build_chart_data(
             )
             irs_fm_mtm   += mtm_arr
             irs_fm_carry += carry_arr
+            # 정산 이벤트 수집 (scf_s 배열에서 0이 아닌 날 = 리픽싱 정산일)
+            scf_arr = metrics.get("scf_s", [])
+            for day_idx, scf in enumerate(scf_arr):
+                if day_idx > 0 and abs(float(scf)) > 1:
+                    event_date = (_base_dt + timedelta(days=day_idx)).isoformat() if _base_dt else None
+                    irs_settlement_events.append({
+                        "day":          day_idx,
+                        "date":         event_date,
+                        "positionName": getattr(p, "name", "") or getattr(p, "id", ""),
+                        "positionId":   getattr(p, "id", ""),
+                        "notional":     p.notional or 0,
+                        "direction":    int(p.direction or 1),
+                        "fixedRate":    p.couponRate or 0,
+                        "settledCf":    round(float(scf)),
+                    })
         except Exception as e:
             import traceback as _tb
             print(f"=== [CRITICAL] 엔진 크래시 상세 추적 ({getattr(p, 'id', '')}) ===")
@@ -522,7 +543,7 @@ def build_chart_data(
         "breakEvenDay": break_even_day,
     }
 
-    return chart_data, summary
+    return chart_data, summary, irs_settlement_events
 
 
 def build_pvbp_sensitivity(positions: list[FrontendPosition]) -> list[dict]:
@@ -718,7 +739,7 @@ def simulate(req: SimulateRequest):
 
     funding_events = req.fundingEvents or (req.shockCurves.fundingEvents if req.shockCurves else [])
 
-    chart_data, summary = build_chart_data(
+    chart_data, summary, irs_settlement_events = build_chart_data(
         positions=positions,
         shock_curves=req.shockCurves,
         funding_rate=req.fundingRate,
@@ -743,6 +764,7 @@ def simulate(req: SimulateRequest):
         "summary": summary,
         "pvbpSensitivity": pvbp_sensitivity,
         "bookDailyPnLs": book_daily_pnls,
+        "irsSettlementEvents": irs_settlement_events,
     }
 
 

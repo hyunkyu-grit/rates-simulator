@@ -82,6 +82,8 @@ export default function ScenarioSimulator({ positions, baseDate, fundingRate, sh
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [chartData, setChartData] = useState<any[]>([]);
   const [summary, setSummary] = useState({ finalMTM: 0, finalCarry: 0, finalSwap: 0, finalTotal: 0, breakEvenDay: -1 });
+  const [irsEvents, setIrsEvents] = useState<any[]>([]);
+  const [showIrsEvents, setShowIrsEvents] = useState(false);
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const [chartContainerWidth, setChartContainerWidth] = useState(0);
 
@@ -198,6 +200,7 @@ export default function ScenarioSimulator({ positions, baseDate, fundingRate, sh
 
       setChartData(result.chartData ?? []);
       if (result.summary) setSummary(result.summary);
+      if (result.irsSettlementEvents) setIrsEvents(result.irsSettlementEvents);
       if (onMetricsUpdate) onMetricsUpdate(result.pvbpSensitivity ?? [], result.bookDailyPnLs ?? []);
       setIsSimulated(true);
     } catch (err) {
@@ -207,6 +210,25 @@ export default function ScenarioSimulator({ positions, baseDate, fundingRate, sh
       setIsLoading(false);
     }
   };
+
+  // baseDate 또는 fundingRate가 바뀌면 이미 시뮬레이션된 상태에서 자동 재실행
+  const prevBaseDateRef = useRef(baseDate);
+  const prevFundingRateRef = useRef(fundingRate);
+  useEffect(() => {
+    if (
+      isSimulated &&
+      positions.length > 0 &&
+      (prevBaseDateRef.current !== baseDate || prevFundingRateRef.current !== fundingRate)
+    ) {
+      prevBaseDateRef.current = baseDate;
+      prevFundingRateRef.current = fundingRate;
+      runSimulation();
+    } else {
+      prevBaseDateRef.current = baseDate;
+      prevFundingRateRef.current = fundingRate;
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [baseDate, fundingRate]);
 
   const formatAmt = (num: number) => Math.round(num / 10000).toLocaleString() + '만';
   const fmtSigned = (num: number) => {
@@ -607,6 +629,57 @@ export default function ScenarioSimulator({ positions, baseDate, fundingRate, sh
                 </div>
               );
             })()}
+
+            {/* IRS 정산 이벤트 진단 테이블 */}
+            {irsEvents.length > 0 && (
+              <div className="bg-gray-900/70 border border-indigo-800/40 rounded-lg p-3 mb-3">
+                <button
+                  onClick={() => setShowIrsEvents(v => !v)}
+                  className="flex items-center justify-between w-full"
+                >
+                  <span className="text-xs font-semibold text-indigo-300">
+                    IRS 리픽싱 정산 이벤트 ({irsEvents.length}건)
+                  </span>
+                  <span className="text-xs text-gray-500">{showIrsEvents ? '▲ 접기' : '▼ 펼치기'}</span>
+                </button>
+                {showIrsEvents && (
+                  <div className="mt-2 overflow-x-auto">
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="text-gray-400 border-b border-gray-700">
+                          <th className="text-left py-1 pr-3">날짜</th>
+                          <th className="text-left py-1 pr-3">D+</th>
+                          <th className="text-left py-1 pr-3 max-w-[180px]">종목명</th>
+                          <th className="text-right py-1 pr-3">액면(억)</th>
+                          <th className="text-right py-1 pr-3">방향</th>
+                          <th className="text-right py-1 pr-3">고정금리</th>
+                          <th className="text-right py-1">정산 CF(만)</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {irsEvents
+                          .sort((a: any, b: any) => a.day - b.day)
+                          .map((ev: any, i: number) => {
+                            const cfMan = Math.round((ev.settledCf || 0) / 10000);
+                            const notEok = Math.round((ev.notional || 0) / 1e8 * 10) / 10;
+                            return (
+                              <tr key={i} className={`border-b border-gray-800 ${cfMan >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                <td className="py-1 pr-3 text-gray-300">{ev.date ?? '-'}</td>
+                                <td className="py-1 pr-3 text-gray-400">D+{ev.day}</td>
+                                <td className="py-1 pr-3 text-gray-200 truncate max-w-[180px]">{ev.positionName}</td>
+                                <td className="py-1 pr-3 text-right text-gray-300">{notEok.toFixed(0)}</td>
+                                <td className="py-1 pr-3 text-right">{ev.direction === 1 ? 'RF' : 'PF'}</td>
+                                <td className="py-1 pr-3 text-right text-gray-300">{(ev.fixedRate || 0).toFixed(3)}%</td>
+                                <td className="py-1 text-right font-medium">{cfMan >= 0 ? '+' : ''}{cfMan.toLocaleString()}</td>
+                              </tr>
+                            );
+                          })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            )}
 
             <div ref={chartContainerRef} className="flex-1 w-full min-h-[300px]">
               {chartContainerWidth > 0 && <ResponsiveContainer width="100%" height="100%">
