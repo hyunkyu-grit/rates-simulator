@@ -604,9 +604,8 @@ def simulate_irs_path_fm(
     npv_s_initial = npv_b_prev
     cum_cf_s = 0.0  # 충격 경로 누적 정산 현금흐름 (리픽싱 데이마다 누적)
     cum_cf_b = 0.0  # 기준 경로 누적 정산 현금흐름
-    # 첫 번째 리픽싱(stub 기간)은 t0_nxt를 어큐럴로 사용 — float_freq(0.25) 고정 시 NPV와 불일치
-    first_refix_done_s = False
-    first_refix_done_b = False
+    # 정산 어큐럴은 항상 float_freq(=쿠폰 주기): NPV stub ≈ float_freq이므로 두 값이 매칭됨
+    # t0_nxt(기준일→다음지급일)을 어큐럴로 쓰면, t0_nxt<<float_freq일 때 NPV와 불일치 → 계단 발생
 
     # Bug 1: 포트폴리오 합산용 일별 NPV / 정산 CF 배열 (호출자에서 += 로 집계)
     daily_npv_s = np.zeros(D)
@@ -675,20 +674,15 @@ def simulate_irs_path_fm(
             _is_pay = (direction == -1)
             if refixed_s:
                 _net_s       = (flt_s_old - fixed_rate_pct) if _is_pay else (fixed_rate_pct - flt_s_old)
-                # 첫 번째 정산은 실제 stub 기간(t0_nxt)으로 — 이후는 표준 float_freq(0.25)
-                _accrual_s   = t0_nxt if not first_refix_done_s else float_freq
-                settled_cf_s = notional * (_net_s / 100.0) * _accrual_s
+                settled_cf_s = notional * (_net_s / 100.0) * float_freq
                 cum_cf_s    += settled_cf_s
-                first_refix_done_s = True
             else:
                 settled_cf_s = 0.0
 
             if refixed_b:
                 _net_b       = (flt_b_old - fixed_rate_pct) if _is_pay else (fixed_rate_pct - flt_b_old)
-                _accrual_b   = t0_nxt if not first_refix_done_b else float_freq
-                settled_cf_b = notional * (_net_b / 100.0) * _accrual_b
+                settled_cf_b = notional * (_net_b / 100.0) * float_freq
                 cum_cf_b    += settled_cf_b
-                first_refix_done_b = True
             else:
                 settled_cf_b = 0.0
 
