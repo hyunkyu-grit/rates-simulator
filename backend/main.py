@@ -357,7 +357,6 @@ def build_chart_data(
     port_scf_b      = np.zeros(sim_days + 1)
     port_scf_s      = np.zeros(sim_days + 1)
     first_pos_audit_rows: list[dict] = []      # 포트폴리오 CSV용 첫 번째 종목 상세 데이터
-    print(f"[BUILD] IRS 종목 {len(irs_positions)}개 시뮬레이션 시작 (bond≈{len(bond_positions)}개)")
     irs_shock_curve = (
         irs_shock_curve_prebuilt
         if irs_shock_curve_prebuilt is not None
@@ -377,10 +376,6 @@ def build_chart_data(
             t_next = t_mat * 0.1 if t_mat < 0.25 else 0.25
         t_next = max(min(t_next, t_mat), 1.0 / 365.0)
 
-        print(f"  [T_NEXT] 종목 {i+1} id={getattr(p,'id','')} "
-              f"nextFixingDate={p.nextFixingDate!r} "
-              f"remainingDays={p.remainingDays} t_mat={t_mat:.4f}Y "
-              f"→ t_next={t_next:.4f}Y ({round(t_next*365)}일)")
         try:
             mtm_arr, _, carry_arr, metrics, pos_audit = qe.simulate_irs_path_fm(
                 par_rates              = par_rates,
@@ -406,8 +401,6 @@ def build_chart_data(
             port_scf_s   += metrics["scf_s"]
             if i == 0:
                 first_pos_audit_rows = pos_audit   # 첫 번째 종목 커브/금리 상세 데이터 보존
-            print(f"  [BUILD] 종목 {i+1}/{len(irs_positions)} id={getattr(p, 'id', '')} "
-                  f"notional={p.notional:,.0f} dir={p.direction} → 최종 MTM={mtm_arr[-1]:,.0f}")
         except Exception as e:
             import traceback as _tb
             print(f"=== [CRITICAL] 엔진 크래시 상세 추적 ({getattr(p, 'id', '')}) ===")
@@ -511,11 +504,6 @@ def build_chart_data(
         # 채권 캐리 / IRS 캐리 분리 누적
         cumulative_bond_carry += (bond_carry or 0.0) + daily_cash_return
         cumulative_irs_carry  += (irs_carry_t or 0.0)
-
-        if abs(irs_carry_t) > 50_000_000 or abs(daily_cash_return) > 50_000_000:
-            print(f"[CARRY-DIAG] Day {t}: irs_carry={irs_carry_t:,.0f}  "
-                  f"bond_carry={bond_carry:,.0f}  cash_return={daily_cash_return:,.0f}  "
-                  f"cum_bond_carry={cumulative_bond_carry:,.0f}")
 
         # 스왑손익 = IRS MTM + 누적 IRS 캐리
         swap_pnl  = irs_mtm_t + cumulative_irs_carry
@@ -768,13 +756,6 @@ def enrich_irs_pvbp(
 
 @app.post("/api/simulate")
 def simulate(req: SimulateRequest):
-    # ── [DEBUG] 엔드포인트 진입 즉시 확인 (가장 먼저 실행) ────────────────────
-    print("\n" + "="*60)
-    print("=== [DEBUG] /api/simulate 진입 ===")
-    print(f"  positions={len(req.positions)}  simDays={req.simDays}")
-    print(f"  shockMode={req.shockMode!r}  shockType={req.shockType!r}  baseShockBp={req.baseShockBp}")
-    print(f"  irsCurves_len={len(req.irsCurves)}  shockCurves={req.shockCurves is not None}")
-
     # ── Shock Curve 명시적 빌드 (엔드포인트 레벨) ────────────────────────────
     _swap_raw = req.shockCurves.swapCurve if req.shockCurves else []
     if req.shockMode == "matrix" and _swap_raw:
@@ -786,11 +767,6 @@ def simulate(req: SimulateRequest):
         irs_shock_curve = _parsed if _parsed else [(0.0, req.baseShockBp), (30.0, req.baseShockBp)]
     else:
         irs_shock_curve = [(0.0, req.baseShockBp), (30.0, req.baseShockBp)]
-
-    parsed_shock_curve = {f"{t}Y": round(bp, 4) for t, bp in irs_shock_curve}
-    print("=== [DEBUG] /api/simulate Parsed Shock ===", parsed_shock_curve)
-    print(f"  swapCurve_raw_len={len(_swap_raw)}  irs_shock_curve_nodes={len(irs_shock_curve)}")
-    print("="*60)
 
     # ── IRS 포지션에 백엔드 프라이싱 결과 주입 ────────────────────────────────
     try:
@@ -821,17 +797,6 @@ def simulate(req: SimulateRequest):
     # bookDailyPnL: 당일 실제 금리변동만 반영. dailyShockCurves 없으면 shockCurves로 fallback
     daily_curves = req.dailyShockCurves if req.dailyShockCurves is not None else req.shockCurves
     book_daily_pnls = build_book_daily_pnl(positions, daily_curves, req.fundingRate)
-
-    # ── DEBUG: IRS Raw Data 터미널 출력 ─────────────────────────────────────────
-    irs_pos = [p for p in positions if p.bondType == "swap"]
-    if irs_pos:
-        print("\n[DEBUG /api/simulate] ── IRS Positions Raw Data ──────────────────")
-        for p in irs_pos:
-            print(f"  id={getattr(p,'id',None)} sector={p.sector} direction={p.direction} "
-                  f"notional={p.notional} couponRate={p.couponRate}% "
-                  f"currentFloatRate={p.currentFloatRate}%")
-            print(f"    pvbp={p.pvbp:.0f}  krdMap={p.krdMap}")
-        print("[DEBUG] ─────────────────────────────────────────────────────────\n")
 
     return {
         "status": "ok",
