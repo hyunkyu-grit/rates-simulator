@@ -597,35 +597,71 @@ export default function ScenarioSimulator({ positions, baseDate, fundingRate, sh
                     <tbody>
                       {bokEvents.map((d: any) => {
                         const b = d.bokBreakdown;
-                        const total = b.shortDelta + b.blendDelta + b.longDelta;
+                        const bondTotal = b.shortDelta + b.blendDelta + b.longDelta;
+                        const irsTotal  = (b.irsShortDelta ?? 0) + (b.irsBlendDelta ?? 0) + (b.irsLongDelta ?? 0);
+                        const hasIrs    = b.irsShortPvbp !== undefined &&
+                          (Math.abs(b.irsShortPvbp) + Math.abs(b.irsBlendPvbp ?? 0) + Math.abs(b.irsLongPvbp ?? 0)) > 0;
                         const clr = (v: number) => v < 0 ? 'text-red-400' : v > 0 ? 'text-blue-400' : 'text-gray-500';
                         const impliedBp = (delta: number, pvbp: number) =>
                           pvbp > 0 ? Math.round(-delta / pvbp * 10) / 10 : null;
+                        const fmtPvbp = (v: number) => {
+                          const man = Math.round(v / 10000);
+                          return (man >= 0 ? '+' : '') + man.toLocaleString() + '만';
+                        };
                         const shortBp = impliedBp(b.shortDelta, b.shortPvbp);
                         const blendBp = impliedBp(b.blendDelta, b.blendPvbp);
                         const longBp  = impliedBp(b.longDelta,  b.longPvbp);
                         return (
-                          <tr key={d.day} className="border-t border-gray-700/50">
-                            <td className="py-1.5 text-gray-300">{fmtDateShort(d.day)}</td>
-                            <td className={`py-1.5 text-right ${clr(b.shortDelta)}`}>
-                              {fmtBok(b.shortDelta)}
-                              {shortBp !== null && <span className="text-gray-500 ml-1">({shortBp}bp)</span>}
-                            </td>
-                            <td className={`py-1.5 text-right ${clr(b.blendDelta)}`}>
-                              {fmtBok(b.blendDelta)}
-                              {blendBp !== null && <span className="text-gray-500 ml-1">({blendBp}bp)</span>}
-                            </td>
-                            <td className={`py-1.5 text-right ${clr(b.longDelta)}`}>
-                              {fmtBok(b.longDelta)}
-                              {longBp !== null && <span className="text-gray-500 ml-1">({longBp}bp)</span>}
-                            </td>
-                            <td className={`py-1.5 text-right font-bold ${total < 0 ? 'text-red-300' : 'text-emerald-300'}`}>{fmtBok(total)}</td>
-                          </tr>
+                          <React.Fragment key={d.day}>
+                            {/* 채권 행 */}
+                            <tr className="border-t border-gray-700/50">
+                              <td className="py-1.5 text-gray-300">
+                                {fmtDateShort(d.day)}
+                                {hasIrs && <div className="text-[9px] text-gray-600 mt-0.5">채권</div>}
+                              </td>
+                              <td className={`py-1.5 text-right ${clr(b.shortDelta)}`}>
+                                {fmtBok(b.shortDelta)}
+                                {shortBp !== null && <span className="text-gray-500 ml-1">({shortBp}bp)</span>}
+                              </td>
+                              <td className={`py-1.5 text-right ${clr(b.blendDelta)}`}>
+                                {fmtBok(b.blendDelta)}
+                                {blendBp !== null && <span className="text-gray-500 ml-1">({blendBp}bp)</span>}
+                              </td>
+                              <td className={`py-1.5 text-right ${clr(b.longDelta)}`}>
+                                {fmtBok(b.longDelta)}
+                                {longBp !== null && <span className="text-gray-500 ml-1">({longBp}bp)</span>}
+                              </td>
+                              <td className={`py-1.5 text-right font-bold ${bondTotal < 0 ? 'text-red-300' : 'text-emerald-300'}`}>
+                                {fmtBok(bondTotal)}
+                              </td>
+                            </tr>
+                            {/* IRS 행 */}
+                            {hasIrs && (
+                              <tr className="bg-indigo-950/20">
+                                <td className="py-1 text-[10px] text-indigo-400 font-semibold pl-2">└ IRS</td>
+                                <td className={`py-1 text-right ${clr(b.irsShortDelta)}`}>
+                                  <div>{fmtBok(b.irsShortDelta ?? 0)}</div>
+                                  <div className="text-[10px] text-gray-500">PVBP {fmtPvbp(b.irsShortPvbp ?? 0)}</div>
+                                </td>
+                                <td className={`py-1 text-right ${clr(b.irsBlendDelta)}`}>
+                                  <div>{fmtBok(b.irsBlendDelta ?? 0)}</div>
+                                  <div className="text-[10px] text-gray-500">PVBP {fmtPvbp(b.irsBlendPvbp ?? 0)}</div>
+                                </td>
+                                <td className={`py-1 text-right ${clr(b.irsLongDelta)}`}>
+                                  <div>{fmtBok(b.irsLongDelta ?? 0)}</div>
+                                  <div className="text-[10px] text-gray-500">PVBP {fmtPvbp(b.irsLongPvbp ?? 0)}</div>
+                                </td>
+                                <td className={`py-1 text-right font-bold ${irsTotal < 0 ? 'text-red-300' : 'text-emerald-300'}`}>
+                                  {fmtBok(irsTotal)}
+                                </td>
+                              </tr>
+                            )}
+                          </React.Fragment>
                         );
                       })}
                     </tbody>
                   </table>
-                  <p className="text-gray-600 text-xs mt-1.5">괄호 = 구간 PVBP 대비 역산 금리변동 · 3M 미만은 BOK 직결, 3M~1Y는 선형 블렌드, 1Y 이상은 장기 웨이포인트</p>
+                  <p className="text-gray-600 text-xs mt-1.5">채권: 구간 PVBP 대비 역산 금리변동(괄호) · IRS: KRD × BOK 단기충격 귀속 손익 / PVBP = 구간 KRD 합산</p>
                 </div>
               );
             })()}

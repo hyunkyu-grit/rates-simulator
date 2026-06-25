@@ -103,8 +103,14 @@ export default function PortfolioDashboard() {
               </div>
               <div className="flex items-center space-x-2">
                 <label className="text-sm text-gray-400">조달 금리:</label>
-                <input type="number" value={fundingRate} onChange={(e) => setFundingRate(parseFloat(e.target.value) || 0)} className="w-20 px-2 py-1 bg-gray-800 border border-gray-700 rounded text-sm" step="0.0001" />
-                <span className="text-sm text-gray-400">({(fundingRate * 100).toFixed(2)}%)</span>
+                <input
+                  type="number"
+                  value={(fundingRate * 100).toFixed(2)}
+                  onChange={(e) => setFundingRate((parseFloat(e.target.value) || 0) / 100)}
+                  className="w-20 px-2 py-1 bg-gray-800 border border-gray-700 rounded text-sm"
+                  step="0.01"
+                />
+                <span className="text-sm text-gray-400">%</span>
               </div>
             </div>
           </div>

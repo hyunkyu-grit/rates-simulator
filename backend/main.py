@@ -497,6 +497,38 @@ def build_chart_data(
                 )
                 bd[f"{zone_name}Delta"] = round(cur_m - prev_m)
                 bd[f"{zone_name}Pvbp"]  = round(zone_pvbp)
+
+            # IRS KRD 구간별 분해: BOK 단기 충격 × KRD PVBP 귀속
+            _delta_short_bp = (short_mult - _short_factor(t - 1)) * base_shock_bp
+            _delta_long_bp  = (multiplier - _factor(t - 1)) * base_shock_bp
+            _KRD_PAIRS = [
+                ("1D", 1/365), ("3M", 0.25), ("6M", 0.5),  ("9M", 0.75),
+                ("1Y", 1.0),   ("1.5Y", 1.5), ("2Y", 2.0), ("3Y", 3.0),
+                ("4Y", 4.0),   ("5Y", 5.0),  ("7Y", 7.0),  ("10Y", 10.0),
+            ]
+            _irs_sp = _irs_bp = _irs_lp = 0.0  # PVBP 합산
+            _irs_sd = _irs_bd = _irs_ld = 0.0  # P&L 합산
+            for _p in irs_positions:
+                _km = _p.krdMap or {}
+                for _tn, _ty in _KRD_PAIRS:
+                    _kv = _km.get(_tn, 0.0) or 0.0
+                    if abs(_kv) < 1:
+                        continue
+                    if _ty <= 0.25:
+                        _irs_sp += _kv
+                        _irs_sd -= _kv * _delta_short_bp
+                    elif _ty <= 1.0:
+                        _w = (_ty - 0.25) / 0.75
+                        _irs_bp += _kv
+                        _irs_bd -= _kv * (_delta_short_bp * (1 - _w) + _delta_long_bp * _w)
+                    else:
+                        _irs_lp += _kv
+                        _irs_ld -= _kv * _delta_long_bp
+            bd.update({
+                "irsShortPvbp": round(_irs_sp), "irsShortDelta": round(_irs_sd),
+                "irsBlendPvbp": round(_irs_bp), "irsBlendDelta": round(_irs_bd),
+                "irsLongPvbp":  round(_irs_lp), "irsLongDelta":  round(_irs_ld),
+            })
             bok_breakdown = bd
         # 일별 캐리: 채권만 calculate_daily_carry, IRS는 FM 엔진 리턴 값 사용 (리픽싱 비선형 반영)
         bond_carry  = calculate_daily_carry(bond_positions, shock_mode, shock_type, base_shock_bp, shock_curves, active_rate, multiplier, t, current_date)
