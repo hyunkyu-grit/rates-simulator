@@ -351,12 +351,6 @@ def build_chart_data(
     par_rates       = qe.parse_irs_curves(irs_curves or [])
     irs_fm_mtm      = np.zeros(sim_days + 1)   # 포트폴리오 합산 MTM 궤적
     irs_fm_carry    = np.zeros(sim_days + 1)   # FM 파생 일별 캐리 (리픽싱 비선형 포함)
-    # Bug 1: 포트폴리오 합산 일별 NPV / 정산 CF 배열
-    port_npv_s      = np.zeros(sim_days + 1)
-    port_npv_b      = np.zeros(sim_days + 1)
-    port_scf_b      = np.zeros(sim_days + 1)
-    port_scf_s      = np.zeros(sim_days + 1)
-    first_pos_audit_rows: list[dict] = []      # 포트폴리오 CSV용 첫 번째 종목 상세 데이터
     irs_shock_curve = (
         irs_shock_curve_prebuilt
         if irs_shock_curve_prebuilt is not None
@@ -377,7 +371,7 @@ def build_chart_data(
         t_next = max(min(t_next, t_mat), 1.0 / 365.0)
 
         try:
-            mtm_arr, _, carry_arr, metrics, pos_audit = qe.simulate_irs_path_fm(
+            mtm_arr, _, carry_arr, *_ = qe.simulate_irs_path_fm(
                 par_rates              = par_rates,
                 notional               = p.notional or 0.0,
                 fixed_rate_pct         = p.couponRate or 0.0,
@@ -390,17 +384,9 @@ def build_chart_data(
                 days_to_simulate       = sim_days,
                 shock_type             = shock_type,
                 base_date_str          = base_date_str,
-                audit                  = (i == 0 and sim_days > 0),
             )
             irs_fm_mtm   += mtm_arr
             irs_fm_carry += carry_arr
-            # Bug 1: 포트폴리오 NPV / CF 합산 (모든 종목 += 로 누적)
-            port_npv_s   += metrics["npv_s"]
-            port_npv_b   += metrics["npv_b"]
-            port_scf_b   += metrics["scf_b"]
-            port_scf_s   += metrics["scf_s"]
-            if i == 0:
-                first_pos_audit_rows = pos_audit   # 첫 번째 종목 커브/금리 상세 데이터 보존
         except Exception as e:
             import traceback as _tb
             print(f"=== [CRITICAL] 엔진 크래시 상세 추적 ({getattr(p, 'id', '')}) ===")
@@ -533,55 +519,6 @@ def build_chart_data(
         "finalTotal": last.get("totalPnL", 0),
         "breakEvenDay": break_even_day,
     }
-
-    # ── 포트폴리오 합산 Audit CSV (종목별 덮어쓰기 없이, 시뮬레이션 종료 후 1회 저장) ──
-    if sim_days > 0 and chart_data:
-        try:
-            from pathlib import Path
-
-            # 포트폴리오 일별 요약 (좌측 콜럼: chart 3종 + 우측 콜럼: Bug 1 합산값)
-            port_rows = []
-            for row in chart_data:
-                t = row["day"]
-                port_rows.append({
-                    "Day":                    t,
-                    "Portfolio_MTM":          row["mtmPnL"],
-                    "Portfolio_Cum_Carry":    row["cumulativeCarry"],
-                    "Portfolio_Total":        row["totalPnL"],
-                    # Bug 1: 모든 IRS 종목 합산된 포트폴리오 레벨 NPV / CF
-                    "Port_NPV_Shocked":       round(float(port_npv_s[t])) if t < len(port_npv_s) else 0,
-                    "Port_NPV_Base":          round(float(port_npv_b[t])) if t < len(port_npv_b) else 0,
-                    "Port_Settled_CF_Base":   round(float(port_scf_b[t])) if t < len(port_scf_b) else 0,
-                    "Port_Settled_CF_Shock":  round(float(port_scf_s[t])) if t < len(port_scf_s) else 0,
-                    "Port_Daily_IRS_Carry":   round(float(irs_fm_carry[t])) if t < len(irs_fm_carry) else 0,
-                    "Port_Daily_IRS_MTM":     round(float(irs_fm_mtm[t])) if t < len(irs_fm_mtm) else 0,
-                })
-            port_df = pd.DataFrame(port_rows)
-
-            # 첫 번째 IRS 종목의 커브/금리 상세 콜럼만 병합 (포트폴리오 레벨 NPV/CF는 위에서 이미 포함)
-            if first_pos_audit_rows:
-                detail_df = pd.DataFrame(first_pos_audit_rows)
-                # NPV/CF 콜럼은 포트폴리오 합산값으로 대체하므로 제외
-                exclude = {"NPV_Shocked", "NPV_Base", "Settled_CF_Base",
-                           "Settled_CF_Shock", "Cum_CF_Diff",
-                           "Daily_FM_Carry", "Daily_Clean_MTM"}
-                # "Day"는 detail_df.columns에 이미 존재 — 중복 삽입 금지
-                curve_cols = [c for c in detail_df.columns if c not in exclude]
-                audit_df = port_df.merge(detail_df[curve_cols], on="Day", how="left")
-            else:
-                audit_df = port_df
-
-            out_path = Path(__file__).resolve().parent.parent / "fm_simulation_audit.csv"
-            audit_df.to_csv(out_path, index=False, encoding="utf-8-sig")
-            print(f"\n[AUDIT] ══ 포트폴리오 합산 Audit CSV 저장 완료 ══")
-            print(f"[AUDIT] 경로: {out_path}")
-            print(f"[AUDIT] {len(irs_positions)}개 IRS 종목 합산 | {len(audit_df)}행 | {len(audit_df.columns)}콜럼")
-            print(audit_df[["Day","Portfolio_MTM","Portfolio_Cum_Carry",
-                             "Port_NPV_Base","Port_Settled_CF_Base"]].head(5).to_string(index=False))
-            if len(audit_df) > 5:
-                print(f"... (이하 {len(audit_df)-5}행 생략 — 전체는 CSV 참조)\n")
-        except Exception as _ae:
-            print(f"[AUDIT] CSV 저장 실패 (시뮬레이션 결과는 정상): {_ae}")
 
     return chart_data, summary
 
