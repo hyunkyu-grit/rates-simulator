@@ -528,13 +528,28 @@ def build_chart_data(
                 _t_mat_t = max(_t_mat_0 - t / 365.0, 1.0/365.0)
                 if _t_mat_t < 2.0/365.0:   # 사실상 만기 → 스킵
                     continue
-                # 에이징된 다음 변동일 (backward-from-maturity 분기 스케줄)
-                # t_mat에서 float_freq씩 역산 → 가장 가까운 미래 변동일
-                _k_fl    = int(_t_mat_t / _FLOAT_Q)  # floor
-                _t_nxt_t = _t_mat_t - _k_fl * _FLOAT_Q
-                if _t_nxt_t < 1.0/365.0:   # 만기가 정확히 변동일이면 다음 회차
-                    _t_nxt_t = _FLOAT_Q
-                _t_nxt_t = max(min(_t_nxt_t, _t_mat_t), 1.0/365.0)
+                # 에이징된 다음 변동일:
+                # nextFixingDate 기준으로 이벤트 당일(current_date)까지 에이징
+                # → enrich_irs_pvbp 의 t_next 계산과 동일 방식 → pvbpSensitivity 일치
+                # 지난 픽싱일이면 91일(분기 근사) 단위로 롤링하여 미래 픽싱일 산출
+                if _p.nextFixingDate:
+                    try:
+                        _nfd = date.fromisoformat(str(_p.nextFixingDate)[:10])
+                        _days_to_nfd = (_nfd - current_date).days
+                        while _days_to_nfd <= 0:
+                            _days_to_nfd += 91  # 분기 근사 롤링
+                        _t_nxt_t = max(min(_days_to_nfd / 365.0, _t_mat_t), 1.0/365.0)
+                    except Exception:
+                        _k_fl    = int(_t_mat_t / _FLOAT_Q)
+                        _t_nxt_t = _t_mat_t - _k_fl * _FLOAT_Q
+                        if _t_nxt_t < 1.0/365.0: _t_nxt_t = _FLOAT_Q
+                        _t_nxt_t = max(min(_t_nxt_t, _t_mat_t), 1.0/365.0)
+                else:
+                    # nextFixingDate 없으면 backward-from-maturity fallback
+                    _k_fl    = int(_t_mat_t / _FLOAT_Q)
+                    _t_nxt_t = _t_mat_t - _k_fl * _FLOAT_Q
+                    if _t_nxt_t < 1.0/365.0: _t_nxt_t = _FLOAT_Q
+                    _t_nxt_t = max(min(_t_nxt_t, _t_mat_t), 1.0/365.0)
                 try:
                     _krd = qe.compute_irs_krd_map(
                         par_rates              = _par_t,
@@ -546,9 +561,9 @@ def build_chart_data(
                         current_float_rate_pct = _p.currentFloatRate or 0.0,
                         sector                 = _p.sector or "IRS",
                     )
-                except Exception:
+                except Exception as _krd_err:
+                    print(f"[BOK KRD] t={t} pos={_p.sector} t_mat={_t_mat_t:.3f} t_nxt={_t_nxt_t:.3f} err={_krd_err}")
                     # 재계산 실패 시 만기 비율로 t=0 KRD를 1차 근사 스케일링
-                    # (정적 krdMap을 그대로 쓰면 모든 BOK 이벤트에서 동일 값이 나옴)
                     _age_scale = _t_mat_t / max(_t_mat_0, 1.0/365.0)
                     _krd = {k: v * _age_scale for k, v in (_p.krdMap or {}).items()}
                 for _tn, _ty in _KRD_PAIRS:
