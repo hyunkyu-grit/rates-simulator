@@ -610,8 +610,8 @@ export default function ScenarioSimulator({ positions, baseDate, fundingRate, sh
                         const fmtBp = (bp: number | null | undefined) =>
                           bp == null ? null : `${bp >= 0 ? '+' : ''}${bp}bp`;
                         const fmtPvbp = (v: number) => {
-                          const man = Math.round(v / 10000);
-                          return (man >= 0 ? '+' : '') + man.toLocaleString() + '만';
+                          const man = Math.round(v / 1000) / 10;  // 0.1만 단위
+                          return (man >= 0 ? '+' : '') + man.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + '만';
                         };
 
                         const shortBp = bondImpliedBp(b.shortDelta, b.shortPvbp);
@@ -640,14 +640,17 @@ export default function ScenarioSimulator({ positions, baseDate, fundingRate, sh
                               <td className="py-1.5 text-right text-gray-600">—</td>
                               <td className={`py-1.5 text-right ${clr(b.shortDelta)}`}>
                                 <div>{fmtBok(b.shortDelta)}</div>
+                                <div className="text-gray-500">PVBP {fmtPvbp(b.shortPvbp ?? 0)}</div>
                                 {shortBp !== null && <div className="text-gray-500">{fmtBp(shortBp)}</div>}
                               </td>
                               <td className={`py-1.5 text-right ${clr(b.blendDelta)}`}>
                                 <div>{fmtBok(b.blendDelta)}</div>
+                                <div className="text-gray-500">PVBP {fmtPvbp(b.blendPvbp ?? 0)}</div>
                                 {blendBp !== null && <div className="text-gray-500">{fmtBp(blendBp)}</div>}
                               </td>
                               <td className={`py-1.5 text-right ${clr(b.longDelta)}`}>
                                 <div>{fmtBok(b.longDelta)}</div>
+                                <div className="text-gray-500">PVBP {fmtPvbp(b.longPvbp ?? 0)}</div>
                                 {longBp !== null && <div className="text-gray-500">{fmtBp(longBp)}</div>}
                               </td>
                               <td className={`py-1.5 text-right font-bold ${bondTotal < 0 ? 'text-red-300' : 'text-emerald-300'}`}>

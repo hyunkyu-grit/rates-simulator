@@ -547,7 +547,10 @@ def build_chart_data(
                         sector                 = _p.sector or "IRS",
                     )
                 except Exception:
-                    _krd = _p.krdMap or {}
+                    # 재계산 실패 시 만기 비율로 t=0 KRD를 1차 근사 스케일링
+                    # (정적 krdMap을 그대로 쓰면 모든 BOK 이벤트에서 동일 값이 나옴)
+                    _age_scale = _t_mat_t / max(_t_mat_0, 1.0/365.0)
+                    _krd = {k: v * _age_scale for k, v in (_p.krdMap or {}).items()}
                 for _tn, _ty in _KRD_PAIRS:
                     _kv = _krd.get(_tn, 0.0) or 0.0
                     if abs(_kv) < 1:
