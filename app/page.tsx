@@ -15,6 +15,7 @@ export default function PortfolioDashboard() {
   const [positions, setPositions] = useState<Position[]>([]);
   const [baseDate, setBaseDate] = useState<string>(new Date().toISOString().slice(0, 10));
   const [fundingRate, setFundingRate] = useState<number>(0.0420);
+  const [fundingRateInput, setFundingRateInput] = useState<string>('');
   const [dailyShockCurves, setDailyShockCurves] = useState<ShockCurves>({ bondCurves: {}, swapCurve: [] });
   const [scenarioShockCurves, setScenarioShockCurves] = useState<ShockCurves>({ bondCurves: {}, swapCurve: [] });
   const [activeTab, setActiveTab] = useState<'dashboard' | 'scenario'>('dashboard');
@@ -105,8 +106,16 @@ export default function PortfolioDashboard() {
                 <label className="text-sm text-gray-400">조달 금리:</label>
                 <input
                   type="number"
-                  value={(fundingRate * 100).toFixed(2)}
-                  onChange={(e) => setFundingRate((parseFloat(e.target.value) || 0) / 100)}
+                  value={fundingRateInput !== '' ? fundingRateInput : (fundingRate * 100).toFixed(2)}
+                  onChange={(e) => setFundingRateInput(e.target.value)}
+                  onBlur={(e) => {
+                    const v = parseFloat(e.target.value);
+                    if (!isNaN(v)) setFundingRate(v / 100);
+                    setFundingRateInput('');
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+                  }}
                   className="w-20 px-2 py-1 bg-gray-800 border border-gray-700 rounded text-sm"
                   step="0.01"
                 />
