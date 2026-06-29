@@ -308,11 +308,15 @@ def _build_irs_shock_curve(
     """IRS FM용 (tenor_years, shock_bp) 충격 커브 구성.
     평행이동: [(0, bp), (30, bp)] 플랫 커브.
     비평행이동: swapCurve [{t, val}] → [(t, val), ...] 변환.
+
+    ※ swapCurve.val은 프론트엔드에서 이미 bp 절댓값(baseShockBp + irsSpread)으로 전달됨.
+       base_shock_bp를 곱하면 이중 스케일 오류이므로 val을 그대로 사용한다.
+       (simulate()에서 irs_shock_curve_prebuilt가 항상 주입되므로 이 함수는 fallback 경로)
     """
     if shock_mode == "parallel" or not shock_curves or not shock_curves.swapCurve:
         return [(0.0, base_shock_bp), (30.0, base_shock_bp)]
     parsed = [
-        (float(p.get("t", 0)), float(p.get("val", 0)))
+        (float(p.get("t", 0)), float(p.get("val", 0)))  # val = bp 절댓값, 곱셈 불필요
         for p in shock_curves.swapCurve
         if float(p.get("t", 0)) > 0
     ]
@@ -357,6 +361,9 @@ def build_chart_data(
         if irs_shock_curve_prebuilt is not None
         else _build_irs_shock_curve(shock_mode, base_shock_bp, shock_curves)
     )
+    # BOK 이벤트 당일 KRD 재계산용 — 쇼크커브 numpy 배열로 미리 변환
+    _irs_sc_t  = np.array([_st for _st, _ in irs_shock_curve], dtype=float) if irs_shock_curve else np.array([0.0, 30.0])
+    _irs_sc_bp = np.array([_sb for _, _sb in irs_shock_curve], dtype=float) if irs_shock_curve else np.array([0.0,  0.0])
     irs_settlement_events: list[dict] = []
     _base_dt = None
     try:
@@ -498,11 +505,12 @@ def build_chart_data(
                 bd[f"{zone_name}Delta"] = round(cur_m - prev_m)
                 bd[f"{zone_name}Pvbp"]  = round(zone_pvbp)
 
-            # IRS KRD 구간별 분해: BOK 이벤트 실제 shiftBp 직접 사용 (1D / 3M / 3M~1Y / 1Y이상)
-            # fraction×base_shock_bp 대신 당일 이벤트 shiftBp 합산을 사용해야
-            # 유저가 설정한 bp(예: 25bp)가 그대로 표시·계산에 반영됨
+            # IRS KRD 구간별 분해: BOK 이벤트 당일 에이징된 par커브로 KRD 재계산
+            # 단기(1D/3M): BOK 정책금리 직결 → _bok_event_bp 그대로 사용
+            # 장기(1Y+):  IRS FM은 항상 linear ramp(factor=day/sim_days) 사용
+            #              채권 커스텀 경로(_factor)와 독립적 → IRS 쇼크 커브 × ramp 증분
             _bok_event_bp  = sum(e["bp"] for e in _short_evts if e["day"] == t)
-            _delta_long_bp = (multiplier - _factor(t - 1)) * base_shock_bp
+            _irs_ramp_step = 1.0 / max(sim_days, 1)  # IRS daily ramp 증분 (1/sim_days)
             _KRD_PAIRS = [
                 ("1D", 1/365), ("3M", 0.25), ("6M", 0.5),  ("9M", 0.75),
                 ("1Y", 1.0),   ("1.5Y", 1.5), ("2Y", 2.0), ("3Y", 3.0),
@@ -510,32 +518,63 @@ def build_chart_data(
             ]
             _irs_1p = _irs_3p = _irs_bp = _irs_lp = 0.0  # PVBP 합산
             _irs_1d = _irs_3d = _irs_bd = _irs_ld = 0.0  # P&L 합산
+            # BOK 이벤트 당일 shocked par 커브 (IRS는 linear ramp)
+            _fac_irs = t / max(sim_days, 1)
+            _par_t   = [(tau, r + float(np.interp(tau, _irs_sc_t, _irs_sc_bp)) * _fac_irs * 1e-4)
+                        for tau, r in par_rates]
+            _FLOAT_Q = 0.25  # 분기 픽싱 표준
             for _p in irs_positions:
-                _km = _p.krdMap or {}
+                _t_mat_0 = max(float(_p.remainingDays or 0) / 365.0, 1.0/365.0)
+                _t_mat_t = max(_t_mat_0 - t / 365.0, 1.0/365.0)
+                if _t_mat_t < 2.0/365.0:   # 사실상 만기 → 스킵
+                    continue
+                # 에이징된 다음 변동일 (backward-from-maturity 분기 스케줄)
+                # t_mat에서 float_freq씩 역산 → 가장 가까운 미래 변동일
+                _k_fl    = int(_t_mat_t / _FLOAT_Q)  # floor
+                _t_nxt_t = _t_mat_t - _k_fl * _FLOAT_Q
+                if _t_nxt_t < 1.0/365.0:   # 만기가 정확히 변동일이면 다음 회차
+                    _t_nxt_t = _FLOAT_Q
+                _t_nxt_t = max(min(_t_nxt_t, _t_mat_t), 1.0/365.0)
+                try:
+                    _krd = qe.compute_irs_krd_map(
+                        par_rates              = _par_t,
+                        notional               = _p.notional or 0.0,
+                        fixed_rate_pct         = _p.couponRate or 0.0,
+                        direction              = int(_p.direction or 1),
+                        t_maturity             = _t_mat_t,
+                        t_next_payment         = _t_nxt_t,
+                        current_float_rate_pct = _p.currentFloatRate or 0.0,
+                        sector                 = _p.sector or "IRS",
+                    )
+                except Exception:
+                    _krd = _p.krdMap or {}
                 for _tn, _ty in _KRD_PAIRS:
-                    _kv = _km.get(_tn, 0.0) or 0.0
+                    _kv = _krd.get(_tn, 0.0) or 0.0
                     if abs(_kv) < 1:
                         continue
-                    if _ty < 0.1:          # 1D
+                    # 해당 테너의 IRS ramp 일별 증분: 쇼크 커브에서 τ별 크기 보간 × (1/sim_days)
+                    _irs_d_bp = float(np.interp(_ty, _irs_sc_t, _irs_sc_bp)) * _irs_ramp_step
+                    if _ty < 0.1:         # 1D — BOK 정책금리 직결
                         _irs_1p += _kv;  _irs_1d -= _kv * _bok_event_bp
-                    elif _ty <= 0.25:      # 3M
+                    elif _ty <= 0.25:     # 3M — BOK 직결
                         _irs_3p += _kv;  _irs_3d -= _kv * _bok_event_bp
-                    elif _ty <= 1.0:       # 3M~1Y (BOK→장기 선형 블렌드)
-                        _w = (_ty - 0.25) / 0.75
-                        _dbp = _bok_event_bp * (1 - _w) + _delta_long_bp * _w
+                    elif _ty <= 1.0:      # 3M~1Y — BOK ↔ IRS ramp 선형 블렌드
+                        _w   = (_ty - 0.25) / 0.75
+                        _dbp = _bok_event_bp * (1 - _w) + _irs_d_bp * _w
                         _irs_bp += _kv;  _irs_bd -= _kv * _dbp
-                    else:                  # 1Y이상
-                        _irs_lp += _kv;  _irs_ld -= _kv * _delta_long_bp
-            # 블렌드 구간 대표 변동폭: 0.625Y(6M~9M 중간) 기준 블렌드
-            _blend_mid_bp = round((_bok_event_bp * 0.5 + _delta_long_bp * 0.5) * 10) / 10
+                    else:                 # 1Y이상 — IRS linear ramp 기준 (채권 커스텀 경로와 무관)
+                        _irs_lp += _kv;  _irs_ld -= _kv * _irs_d_bp
+            # 블렌드/장기 대표 변동폭: IRS 쇼크 커브의 5Y 기준 × ramp 증분
+            _irs_long_d_bp = float(np.interp(5.0, _irs_sc_t, _irs_sc_bp)) * _irs_ramp_step
+            _blend_mid_bp  = round((_bok_event_bp * 0.5 + _irs_long_d_bp * 0.5) * 10) / 10
             bd.update({
                 "irs1dPvbp":    round(_irs_1p), "irs1dDelta":    round(_irs_1d),
                 "irs3mPvbp":    round(_irs_3p), "irs3mDelta":    round(_irs_3d),
                 "irsBlendPvbp": round(_irs_bp), "irsBlendDelta": round(_irs_bd),
                 "irsLongPvbp":  round(_irs_lp), "irsLongDelta":  round(_irs_ld),
-                "bokShortBp":   round(_bok_event_bp  * 10) / 10,   # BOK 이벤트 실제 bp
-                "bokBlendBp":   _blend_mid_bp,                       # 블렌드 중간점
-                "bokLongBp":    round(_delta_long_bp * 10) / 10,    # 장기 경로 변화
+                "bokShortBp":   round(_bok_event_bp    * 10) / 10,  # BOK 이벤트 실제 bp
+                "bokBlendBp":   _blend_mid_bp,                        # IRS 블렌드 중간점
+                "bokLongBp":    round(_irs_long_d_bp   * 10) / 10,  # IRS 5Y 기준 장기 변동폭
             })
             bok_breakdown = bd
         # 일별 캐리: 채권만 calculate_daily_carry, IRS는 FM 엔진 리턴 값 사용 (리픽싱 비선형 반영)
