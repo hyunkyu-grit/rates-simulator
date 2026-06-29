@@ -73,6 +73,27 @@ def _next_business_day(d: _date) -> _date:
     return d
 
 
+def _prev_business_day(d: _date) -> _date:
+    """Sat → Fri (-1), Sun → Fri (-2), 평일은 그대로"""
+    wd = d.weekday()
+    if wd == 5:
+        return d - timedelta(days=1)
+    if wd == 6:
+        return d - timedelta(days=2)
+    return d
+
+
+def _modfol_bd(d: _date) -> _date:
+    """Modified Following 영업일 조정 (주말 전용).
+    다음 영업일로 조정하되, 월경(Month-End Crossing)이면 직전 영업일로 조정.
+    예: Feb 28(토) → Mar 2는 월경 → Feb 27(금) / May 31(일) → Jun 1은 월경 → May 29(금)
+    """
+    adj = _next_business_day(d)
+    if adj.month != d.month:
+        return _prev_business_day(d)
+    return adj
+
+
 def _bday_adj(t_years: float, sim_date: _date) -> float:
     """연수 t_years(sim_date 기준) → 영업일 조정 후 연수 반환"""
     cal = sim_date + timedelta(days=round(t_years * 365))
@@ -245,14 +266,17 @@ def compute_irs_npv(
         #    timedelta(91일) 근사(±1~2일 오차) 대신 달력 개월 역산으로 정확도 향상
         #    예: Apr 13 - 3개월 = Jan 13 (정확), Apr 13 - 91일 = Jan 12 (±1일 오차)
         freq_months = max(1, round(float_freq * 12))   # 0.25Y → 3개월
-        prev_pay_adj = _next_business_day(
+        # Modified Following: 월말 주말은 직전 영업일로 조정 (Forward roll 시 월경 방지)
+        # 예: _subtract_months(May29, 3) = Feb28(토) → modfol → Feb27(금) (March 2 아님)
+        #     _subtract_months(Aug31, 3) = May31(일) → modfol → May29(금) (June 1 아님)
+        prev_pay_adj = _modfol_bd(
             _subtract_months(next_pay_adj, freq_months)
         )
         current_stub_accrual = (next_pay_adj - prev_pay_adj).days / 365.0
 
-        # ③ 미래 지급일: 달력 날짜 변환 + 주말 영업일 조정
+        # ③ 미래 지급일: Modified Following 영업일 조정
         pay_dates_adj = [
-            _next_business_day(sim_date + timedelta(days=round(t * 365)))
+            _modfol_bd(sim_date + timedelta(days=round(t * 365)))
             for t in future_pays_raw
         ]
         future_pays = [(d - sim_date).days / 365.0 for d in pay_dates_adj]
@@ -483,11 +507,6 @@ def compute_irs_theta(
         sim_date=tomorrow,
     )
     theta = npv_tomorrow - npv_today
-    print(
-        f"[THETA DEBUG] notional={notional:,.0f}  fixed={fixed_rate_pct}%  float={current_float_rate_pct}%"
-        f"  dir={direction}  t_mat={t_maturity:.4f}Y  t_next={t_next_payment:.4f}Y"
-        f"  npv_today={npv_today:,.0f}  npv_tomorrow={npv_tomorrow:,.0f}  theta={theta:,.0f}"
-    )
     return theta
 
 
@@ -566,7 +585,6 @@ def simulate_irs_path_fm(
     # ── currentFloatRate 폴백: 0이면 base 커브 3M forward 사용 (400M 점프 방지) ──
     if current_float_rate_pct <= 0.0:
         _fwd = forward_rate_simple(0.0, float_freq, zc_base) * 100.0
-        print(f"[ENGINE] currentFloatRate=0 → base 3M forward {_fwd:.4f}% 사용")
         current_float_rate_pct = _fwd
 
     # ── 커브 사전 계산: step shock은 Day 1 이후 충격 커브가 고정 → 1회만 부트스트래핑 ──
@@ -592,6 +610,18 @@ def simulate_irs_path_fm(
     t_mat_s, t_nxt_s, flt_s = t_maturity, t0_nxt, current_float_rate_pct
     t_mat_b, t_nxt_b, flt_b = t_maturity, t0_nxt, current_float_rate_pct
 
+    # ── 첫 번째 정산 어큐럴 = (직전지급일 → 차기지급일) 실제 일수 ──────────────
+    # compute_irs_npv 가 sim_date 기반으로 계산하는 current_stub_accrual 과 동일한 방법으로
+    # 계산하여 "NPV 하락 = 정산 CF" 등가 관계를 보장. 일관성 없으면 지급일마다 P&L 계단 발생.
+    if _base_date is not None:
+        _nfd_dt   = _base_date + timedelta(days=max(round(t0_nxt * 365), 1))
+        _nfd_adj  = _next_business_day(_nfd_dt)
+        _fmth     = max(1, round(float_freq * 12))
+        _prev_adj = _modfol_bd(_subtract_months(_nfd_adj, _fmth))
+        first_stub = (_nfd_adj - _prev_adj).days / 365.0
+    else:
+        first_stub = float_freq
+
     # Day 0 기준 base NPV
     npv_b_prev = compute_irs_npv(
         notional, fixed_rate_pct, direction,
@@ -601,10 +631,12 @@ def simulate_irs_path_fm(
     )
     # IRS MTM 기준점: Day 0 NPV (무충격, factor=0 → zc_s = zc_base)
     # 이후 모든 MTM = (npv_s - npv_s_initial) + cum_cf_s
-    # IRS carry = 0 (리픽싱 금리가 시나리오 경로를 따르므로 carry/MTM 분리 의미 없음)
     npv_s_initial = npv_b_prev
-    cum_cf_s = 0.0  # 충격 경로 누적 정산 현금흐름 (리픽싱 데이마다 누적)
+    cum_cf_s = 0.0  # 충격 경로 누적 정산 현금흐름
     cum_cf_b = 0.0  # 기준 경로 누적 정산 현금흐름
+    # 차기 정산에 적용할 어큐럴 — 매 리픽싱 후 t_nxt_s 로 갱신 (지급일 역산 일정과 동기화)
+    next_accrual_s = first_stub
+    next_accrual_b = first_stub
 
     # Bug 1: 포트폴리오 합산용 일별 NPV / 정산 CF 배열 (호출자에서 += 로 집계)
     daily_npv_s = np.zeros(D)
@@ -656,32 +688,44 @@ def simulate_irs_path_fm(
             refixed_s = False
             refixed_b = False
 
-            # 5. 동적 리픽싱 — Bug 2: 만기일에도 먼저 수행해야 마지막 쿠폰이 정산됨
+            # 5. 동적 리픽싱 — 만기에서 역산하여 차기 지급일 결정
+            # ▶ 핵심 수정: min(float_freq, t_mat_s) 대신 만기 역산 공식 사용
+            #   min() 방식은 t_mat_s=0.257일 때 t_nxt=0.25 → D+91 phantom 정산 발생
+            #   역산 공식: 잔존 만기에 맞는 지급 횟수를 round()로 구하고 첫 지급일 계산
             if t_nxt_s <= DT * 0.5:
                 refixed_s = True
-                flt_s     = forward_rate_simple(0.0, float_freq, zc_s) * 100.0
-                t_nxt_s   = min(float_freq, t_mat_s)
+                _n_rem_s  = max(round(t_mat_s / float_freq), 1)
+                t_nxt_s   = t_mat_s - (_n_rem_s - 1) * float_freq
+                # 리픽싱 금리: 실제 기간(t_nxt_s)에 대한 simple forward rate 사용
+                # fwd(0, float_freq) 대신 fwd(0, t_nxt_s) → NPV 가치평가와 기간 일치
+                # → "NPV 하락 = 정산 CF" 등가 성립, P&L 계단 최소화
+                flt_s     = forward_rate_simple(0.0, max(t_nxt_s, DT), zc_s) * 100.0
 
             if t_nxt_b <= DT * 0.5:
                 refixed_b = True
-                flt_b     = forward_rate_simple(0.0, float_freq, zc_base) * 100.0
-                t_nxt_b   = min(float_freq, t_mat_b)
+                _n_rem_b  = max(round(t_mat_b / float_freq), 1)
+                t_nxt_b   = t_mat_b - (_n_rem_b - 1) * float_freq
+                flt_b     = forward_rate_simple(0.0, max(t_nxt_b, DT), zc_base) * 100.0
 
-            # 6. 정산 현금흐름 (사용자 지정 공식: Net CF Netting 보장)
-            #    Receive Fixed (+1): net_rate = fixed - float  → CF = N × net_rate/100 × freq
-            #    Pay    Fixed  (-1): net_rate = float - fixed  → CF = N × net_rate/100 × freq
+            # 6. 정산 현금흐름
+            #    어큐럴 = next_accrual_{s,b}: 직전 리픽싱 때 계산한 "이번 기간 길이"
+            #    리픽싱 후 next_accrual를 새 t_nxt_s 로 갱신 → 다음 정산이 정확한 기간 사용
+            #    Receive Fixed (+1): net = fixed − float
+            #    Pay    Fixed  (-1): net = float − fixed
             _is_pay = (direction == -1)
             if refixed_s:
-                _net_s      = (flt_s_old - fixed_rate_pct) if _is_pay else (fixed_rate_pct - flt_s_old)
-                settled_cf_s = notional * (_net_s / 100.0) * float_freq
+                _net_s       = (flt_s_old - fixed_rate_pct) if _is_pay else (fixed_rate_pct - flt_s_old)
+                settled_cf_s = notional * (_net_s / 100.0) * next_accrual_s
                 cum_cf_s    += settled_cf_s
+                next_accrual_s = t_nxt_s   # 다음 기간 길이 = 방금 설정한 차기 지급일까지 거리
             else:
                 settled_cf_s = 0.0
 
             if refixed_b:
-                _net_b      = (flt_b_old - fixed_rate_pct) if _is_pay else (fixed_rate_pct - flt_b_old)
-                settled_cf_b = notional * (_net_b / 100.0) * float_freq
+                _net_b       = (flt_b_old - fixed_rate_pct) if _is_pay else (fixed_rate_pct - flt_b_old)
+                settled_cf_b = notional * (_net_b / 100.0) * next_accrual_b
                 cum_cf_b    += settled_cf_b
+                next_accrual_b = t_nxt_b
             else:
                 settled_cf_b = 0.0
 
@@ -729,10 +773,11 @@ def simulate_irs_path_fm(
                     row["Daily_Clean_MTM"]  = round(float(mtm_pnl[day]))
                     audit_rows.append(row)
 
-                print(f"[MATURITY] Day {day}: 만기 도래 → 최종 CF_b={settled_cf_b:,.0f}  carry={daily_carry[day]:,.0f}")
                 break  # 만기 이후: 잔여 배열은 0 유지 (zero-padding)
 
             # 8. Full Revaluation (FM) NPV 재평가 (만기 전)
+            # sim_date 필수: npv_s_initial(Day 0)이 sim_date 기반으로 계산되므로
+            # 루프 내에서도 동일한 방식으로 계산해야 Day 1 NPV 불일치 스파이크 없음
             _sim_date = (_base_date + timedelta(days=day)) if _base_date else None
             npv_s  = compute_irs_npv(notional, fixed_rate_pct, direction,
                                       t_mat_s, t_nxt_s, flt_s, sector, zc_s,
